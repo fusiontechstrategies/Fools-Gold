@@ -256,7 +256,19 @@ class PilotTests(unittest.TestCase):
         )
 
     def test_json_duplicate_keys_and_nonfinite_rejected(self):
-        for payload in ('{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}'):
+        for payload in ('{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}', '{"x":1e999}'):
+            with self.assertRaises(ContractError):
+                parse_json(payload)
+
+    def test_json_depth_and_node_bounds(self):
+        accepted = parse_json("[" * 20 + "0" + "]" * 20)
+        for _ in range(20):
+            accepted = accepted[0]
+        self.assertEqual(accepted, 0)
+        for payload in (
+            "[" * 34 + "0" + "]" * 34,
+            "[" + ",".join("0" for _ in range(100001)) + "]",
+        ):
             with self.assertRaises(ContractError):
                 parse_json(payload)
 

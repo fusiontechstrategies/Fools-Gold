@@ -17,6 +17,8 @@ flowchart LR
 
 The solid paths run locally today. The SIEM transport is a future deployment component. Suricata can later supply surrounding network context; it is not the source of truth for an S3 read or local Windows file read.
 
+Offline Windows XML/CloudTrail export conversion and Wazuh/Splunk payload rendering now sit around this path. The only HTTP helper targets a synthetic loopback receiver. Production collection/transport is still absent. Retained alerts can be exported again after a failed output operation without changing delivery or acknowledgment state.
+
 ## Trust boundaries
 
 1. **Decoy workload:** synthetic content only. No live passwords, keys, customer records or external callback links.

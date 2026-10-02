@@ -4,6 +4,8 @@ Initial local verification: October 2, 2026, Windows, Python 3.12.
 
 The test suite covers exact GovCloud S3 matching, Windows host/path boundaries and content masks, scoped/expired exceptions, denied access, expired decoys, malformed input, timestamp ordering, persistence/replay collisions, correlation and local acknowledgment. Run the suite to obtain the current count rather than relying on a stale number here.
 
+The adapter increment also tests native XML metadata/outcome, namespace and duplicate-field rejection, DTD/entity/encoding bounds, CloudTrail batch failure, registry snapshot isolation, JSON depth/exponent overflow, local-file Wazuh packet round trips, and loopback mock HEC acceptance/errors/redirects. Deployment artifacts are checked for disabled delivery and exact synthetic scope. This does not substitute for actual Wazuh/Splunk parsing or indexing.
+
 The deterministic synthetic exercise produces:
 
 | Metric | Offline result |

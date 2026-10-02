@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "status": "operator_review_required",
+  "production_delivery_enabled": false,
+  "deployment_enabled": false,
+  "owner": "REPLACE_WITH_APPROVED_OWNER",
+  "govcloud_account": "REPLACE_WITH_APPROVED_ACCOUNT",
+  "govcloud_region": "REPLACE_WITH_APPROVED_REGION",
+  "registry_path": "REPLACE_WITH_PROTECTED_REGISTRY_PATH",
+  "evidence_directory": "REPLACE_WITH_PROTECTED_EVIDENCE_DIRECTORY",
+  "windows_host": "REPLACE_WITH_APPROVED_HOST",
+  "windows_local_decoy_path": "REPLACE_WITH_APPROVED_LOCAL_FILE",
+  "collector_log_epoch": "REPLACE_WITH_COLLECTOR_GENERATION_ID",
+  "splunk_hec": {
+    "endpoint": null,
+    "token_secret_reference": null,
+    "token_expires_at": null,
+    "ca_trust_reference": null,
+    "indexer_ack_required": true,
+    "packet_limit_bytes": 65536,
+    "response_limit_bytes": 4096,
+    "planned_rate_limit_events_per_second": 5,
+    "planned_total_request_deadline_seconds": 5
+  },
+  "wazuh": {
+    "protected_jsonl_path": null,
+    "agent_id": null,
+    "manager_version": null,
+    "rule_id_after_collision_check": null
+  },
+  "acceptance_record": {
+    "source_export_verified": false,
+    "decoder_or_hec_ingestion_verified": false,
+    "alert_or_index_receipt_verified": false,
+    "authenticated_analyst_acknowledgment_verified": false
+  }
+}

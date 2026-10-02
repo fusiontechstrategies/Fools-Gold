@@ -17,6 +17,7 @@ The first release is an **offline pilot**, with no AWS or SIEM connection requir
 - Retain individual alert evidence, link nearby activity, and deduplicate exact replay across restarts.
 - Record a local analyst acknowledgment and its elapsed time.
 - Run repeatable synthetic scenarios that prove the core detection path.
+- Convert bounded Windows Event XML and CloudTrail Records exports, and render Wazuh JSONL or Splunk HEC packets offline.
 
 **No live deployment, Wazuh/Splunk delivery, Suricata integration or automatic response has been verified.** Demo timing and analyst actions are simulated, not customer results.
 
@@ -70,6 +71,9 @@ Decoy expiration does **not** switch off detection. It raises a maintenance flag
 - [Pilot deployment and acceptance plan](docs/PILOT.md)
 - [Threat model and operational limits](docs/SECURITY.md)
 - [Synthetic verification results](docs/VERIFICATION.md)
+- [Offline collection and delivery adapters](docs/ADAPTERS.md)
+- [Deployment review packet](docs/DEPLOYMENT-REVIEW.md)
+- [Focused security review](docs/SECURITY-REVIEW-2026-10-02.md)
 
 Placement details, operational telemetry, client information and credentials belong in protected deployment storage. Only synthetic examples belong in this repository. Private visibility is not a substitute for access control.
 

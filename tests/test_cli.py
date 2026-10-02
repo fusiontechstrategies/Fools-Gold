@@ -5,9 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from test_pilot import registry, s3
-
 from fools_gold.cli import main
+from tests.test_pilot import registry, s3
 
 
 class CliTests(unittest.TestCase):

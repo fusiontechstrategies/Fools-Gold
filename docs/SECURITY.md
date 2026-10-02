@@ -6,6 +6,7 @@
 - Expiring actor/action exceptions checked at event and receipt time; denied S3 attempts never take those exceptions.
 - Parameterized SQL. No evaluation, subprocess launch, remote callbacks or telemetry-driven file access.
 - JSON object duplicate keys/nonfinite numbers rejected by CLI; 1 MiB registry, 64 KiB event records and 100,000 records per ingestion run.
+- JSON nesting is limited to 32 levels/100,000 value nodes. The offline Windows XML adapter forbids DTD/entities and enforces input/tree/field bounds.
 - Persistent replay detection and rejection of changed evidence under an existing source ID.
 - Separate original decisions for correlated activity.
 
@@ -26,5 +27,7 @@
 **Resource aliases:** Windows case folding does not resolve hard links, junctions, device paths, SMB aliases or 8.3 paths. S3 versions, batch operations and alternate ARN forms need separate contracts/tests. Review real exported events during pilot acceptance.
 
 **Response:** unexpected access does not establish malicious intent. No automated disablement, deletion, quarantine or account blocking is present. Human triage remains required.
+
+**Offline adapters:** packet rendering is not production delivery. The only HTTP helper uses a fixed loopback address and synthetic token for mock tests. Planned production TLS/auth/rate/outbox controls and their acceptance evidence are documented in [ADAPTERS.md](ADAPTERS.md).
 
 Report issues through the private repository's issue tracker with synthetic reproduction data only. Do not upload operational placements or private telemetry.

@@ -1,0 +1,11 @@
+[
+  {
+    "Name": "FoolsGoldSyntheticObjectPilot",
+    "FieldSelectors": [
+      {"Field": "eventCategory", "Equals": ["Data"]},
+      {"Field": "resources.type", "Equals": ["AWS::S3::Object"]},
+      {"Field": "resources.ARN", "Equals": ["arn:aws-us-gov:s3:::synthetic-decoy-bucket/backups/inventory.txt"]},
+      {"Field": "eventName", "Equals": ["GetObject", "PutObject", "DeleteObject"]}
+    ]
+  }
+]

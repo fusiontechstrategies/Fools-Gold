@@ -46,6 +46,8 @@ Mask bits: `0x1` read data, `0x2` write data, `0x4` append data, `0x10000` delet
 
 The collector must enable the correct audit policy/file SACL and map genuine provider/channel/outcome fields. Event 4656 and denied-access monitoring need a separate future adapter.
 
+The offline XML and CloudTrail export converters are documented in [ADAPTERS.md](ADAPTERS.md). Windows computer names must be bounded ASCII names without replay-key delimiters. A supplied S3 `errorCode` must be a nonempty string.
+
 ## Decisions and evidence
 
 Each accepted source event yields `alert`, `expected_access`, `unmatched` or `duplicate`. Malformed/unsupported records print `rejected` and make ingestion exit with status 2. Oversized records stop ingestion, preserving earlier committed decisions.

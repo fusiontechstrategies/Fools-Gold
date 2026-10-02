@@ -5,6 +5,7 @@ No network calls, deployment, containment, or source content reads occur here.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import ntpath
@@ -66,6 +67,15 @@ def windows_path(value: str) -> str:
     return ntpath.normpath(value).casefold()
 
 
+def windows_host(value: str) -> str:
+    value = text(value, "Windows host", 255)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", value):
+        raise ContractError(
+            "Windows host must be an ASCII computer name without delimiters"
+        )
+    return value.casefold()
+
+
 def required_dict(value, name):
     if not isinstance(value, dict):
         raise ContractError(f"{name} must be an object")
@@ -85,7 +95,7 @@ def normalize(raw: dict) -> dict:
             raise ContractError("only Windows Security event 4663 is supported")
         if raw.get("audit_outcome") != "success" or raw.get("object_type") != "File":
             raise ContractError("4663 contract requires a successful File access audit")
-        host = text(raw.get("computer"), "computer", 255).casefold()
+        host = windows_host(raw.get("computer"))
         epoch = text(raw.get("log_epoch"), "log epoch", 128)
         record = text(raw.get("record_id"), "record id", 64)
         if not record.isdecimal():
@@ -152,6 +162,8 @@ def normalize(raw: dict) -> dict:
     actor = text(identity.get("arn"), "principal ARN", 2048)
     if not actor.startswith("arn:aws-us-gov:"):
         raise ContractError("principal must use the GovCloud partition")
+    if "errorCode" in raw:
+        text(raw["errorCode"], "S3 error code", 128)
     return {
         "schema_version": 1,
         "source": "aws.cloudtrail.s3",
@@ -170,6 +182,7 @@ def normalize(raw: dict) -> dict:
 class Registry:
     def __init__(self, document: dict):
         required_dict(document, "registry")
+        document = copy.deepcopy(document)
         if (
             type(document.get("schema_version")) is not int
             or document["schema_version"] != 1
@@ -199,7 +212,7 @@ class Registry:
                 if set(loc) != {"host", "path"}:
                     raise ContractError("Windows locator requires host and path only")
                 loc = {
-                    "host": text(loc["host"], "host", 255).casefold(),
+                    "host": windows_host(loc["host"]),
                     "path": windows_path(loc["path"]),
                 }
             else:
@@ -431,3 +444,10 @@ class Engine:
             ],
             "delivery_scope": "local SQLite evidence only; no SIEM delivery measured",
         }
+
+    def export_alerts(self):
+        """Read retained evidence for offline packaging/recovery, not delivery ack."""
+        for (evidence,) in self.db.execute(
+            "SELECT evidence FROM alerts ORDER BY received_at,id"
+        ):
+            yield json.loads(evidence)

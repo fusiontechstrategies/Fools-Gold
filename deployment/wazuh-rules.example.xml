@@ -1,0 +1,8 @@
+<!-- Choose unused local rule IDs after checking the existing manager ruleset. -->
+<group name="fools_gold,">
+  <rule id="110700" level="10">
+    <decoded_as>json</decoded_as>
+    <field name="fg_product">^fools-gold$</field>
+    <description>Fool's Gold: unexpected decoy interaction. Confirm authorized activity before attributing intent.</description>
+  </rule>
+</group>

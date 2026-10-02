@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -24,13 +25,27 @@ def no_duplicate_keys(pairs):
 
 def parse_json(data):
     try:
-        return json.loads(
+        value = json.loads(
             data,
             object_pairs_hook=no_duplicate_keys,
             parse_constant=lambda _: (_ for _ in ()).throw(
                 ContractError("nonfinite JSON number")
             ),
         )
+        pending = [(value, 0)]
+        nodes = 0
+        while pending:
+            node, depth = pending.pop()
+            nodes += 1
+            if depth > 32 or nodes > 100000:
+                raise ContractError("JSON exceeds depth/node limits")
+            if isinstance(node, float) and not math.isfinite(node):
+                raise ContractError("nonfinite JSON number")
+            if isinstance(node, dict):
+                pending.extend((child, depth + 1) for child in node.values())
+            elif isinstance(node, list):
+                pending.extend((child, depth + 1) for child in node)
+        return value
     except (ValueError, RecursionError) as exc:
         raise ContractError("invalid JSON input") from exc
 
@@ -60,6 +75,10 @@ def main(argv=None):
     ack.add_argument("alert_id")
     ack.add_argument("--analyst", required=True)
     commands.add_parser("report", help="Summarize stored local evidence")
+    commands.add_parser(
+        "export-alerts",
+        help="Read retained alerts as decision JSONL; does not deliver or acknowledge",
+    )
     args = parser.parse_args(argv)
     engine = None
     try:
@@ -105,7 +124,10 @@ def main(argv=None):
                     else:
                         print(canonical(result))
             return 2 if errors else 0
-        if args.command == "acknowledge":
+        if args.command == "export-alerts":
+            for alert in engine.export_alerts():
+                print(canonical({"decision": "alert", "alert": alert}))
+        elif args.command == "acknowledge":
             engine.acknowledge(args.alert_id, args.analyst, datetime.now(UTC))
             print(canonical({"alert_id": args.alert_id, "acknowledged": True}))
         else:

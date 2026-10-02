@@ -1,0 +1,9 @@
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+<System><Provider Name="Microsoft-Windows-Security-Auditing"/>
+<EventID>4663</EventID><Keywords>0x8020000000000000</Keywords>
+<TimeCreated SystemTime="2026-10-02T11:59:58Z"/><EventRecordID>101</EventRecordID>
+<Channel>Security</Channel><Computer>synthetic-fs01</Computer></System>
+<EventData><Data Name="SubjectUserSid">S-1-5-21-111-222-333-1001</Data>
+<Data Name="ObjectType">File</Data><Data Name="ObjectName">C:\SyntheticDecoys\config-export.txt</Data>
+<Data Name="AccessMask">0x1</Data><Data Name="ProcessName">C:\Windows\System32\notepad.exe</Data>
+</EventData></Event>

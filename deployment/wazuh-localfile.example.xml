@@ -1,0 +1,5 @@
+<!-- Review and merge into the protected agent ossec.conf. Not installed automatically. -->
+<localfile>
+  <log_format>json</log_format>
+  <location>/var/lib/fools-gold/alerts.jsonl</location>
+</localfile>

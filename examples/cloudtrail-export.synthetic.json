@@ -1,0 +1,28 @@
+{
+  "Records": [
+    {
+      "eventSource": "s3.amazonaws.com",
+      "eventCategory": "Data",
+      "eventName": "GetObject",
+      "eventID": "synthetic-s3-001",
+      "eventTime": "2026-10-02T11:59:55Z",
+      "awsRegion": "us-gov-west-1",
+      "recipientAccountId": "000000000000",
+      "requestParameters": {
+        "bucketName": "synthetic-decoy-bucket",
+        "key": "backups/inventory.txt"
+      },
+      "resources": [
+        {
+          "type": "AWS::S3::Object",
+          "ARN": "arn:aws-us-gov:s3:::synthetic-decoy-bucket/backups/inventory.txt"
+        }
+      ],
+      "userIdentity": {
+        "type": "AssumedRole",
+        "arn": "arn:aws-us-gov:sts::000000000000:assumed-role/synthetic-intrusion-test/synthetic-session"
+      },
+      "sourceIPAddress": "192.0.2.10"
+    }
+  ]
+}
