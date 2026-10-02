@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fools-gold"
+version = "0.1.0"
+description = "Offline cyber decoy detection and assurance pilot"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+fools-gold = "fools_gold.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]

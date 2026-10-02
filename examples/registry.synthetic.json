@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "decoys": [
+    {
+      "id": "synthetic-s3-backup",
+      "owner": "synthetic-soc",
+      "source": "aws.cloudtrail.s3",
+      "locator": {
+        "account": "000000000000",
+        "region": "us-gov-west-1",
+        "arn": "arn:aws-us-gov:s3:::synthetic-decoy-bucket/backups/inventory.txt"
+      },
+      "created_at": "2026-10-01T00:00:00Z",
+      "expires_at": "2026-11-01T00:00:00Z",
+      "expected_actions": [
+        "read",
+        "write",
+        "append",
+        "delete"
+      ],
+      "response_procedure": "Synthetic triage: verify actor and contact owner",
+      "exceptions": [
+        {
+          "id": "synthetic-backup-test",
+          "actor": "arn:aws-us-gov:sts::000000000000:assumed-role/synthetic-backup/synthetic-session",
+          "owner": "synthetic-backup-owner",
+          "reason": "Authorized synthetic read test",
+          "actions": [
+            "read"
+          ],
+          "starts_at": "2026-10-02T00:00:00Z",
+          "expires_at": "2026-10-03T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-windows-config",
+      "owner": "synthetic-soc",
+      "source": "windows.security",
+      "locator": {
+        "host": "synthetic-fs01",
+        "path": "C:\\SyntheticDecoys\\config-export.txt"
+      },
+      "created_at": "2026-10-01T00:00:00Z",
+      "expires_at": "2026-11-01T00:00:00Z",
+      "expected_actions": [
+        "read",
+        "write",
+        "append",
+        "delete"
+      ],
+      "response_procedure": "Synthetic triage: inspect process and confirm authorized testing"
+    }
+  ]
+}
