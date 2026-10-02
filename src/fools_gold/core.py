@@ -33,11 +33,11 @@ def instant(value) -> datetime:
         parsed = datetime.fromisoformat(
             text(value, "timestamp", 64).replace("Z", "+00:00")
         )
-    except ValueError as exc:
+        if parsed.tzinfo is None:
+            raise ContractError("timestamp must include a timezone")
+        return parsed.astimezone(UTC)
+    except (ValueError, OverflowError) as exc:
         raise ContractError("timestamp must be ISO 8601 with a timezone") from exc
-    if parsed.tzinfo is None:
-        raise ContractError("timestamp must include a timezone")
-    return parsed.astimezone(UTC)
 
 
 def stamp(value: datetime) -> str:
@@ -203,7 +203,9 @@ class Registry:
                     "path": windows_path(loc["path"]),
                 }
             else:
-                if set(loc) != {"account", "region", "arn"} or loc["region"] not in {
+                if set(loc) != {"account", "region", "arn"} or text(
+                    loc["region"], "registry region", 64
+                ) not in {
                     "us-gov-east-1",
                     "us-gov-west-1",
                 }:

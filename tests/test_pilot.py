@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fools_gold.cli import parse_json
-from fools_gold.core import ContractError, Engine, Registry, normalize
+from fools_gold.core import ContractError, Engine, Registry, instant, normalize
 
 NOW = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
 
@@ -304,6 +304,17 @@ class PilotTests(unittest.TestCase):
             raw["object_name"] = value
             with self.assertRaises(ContractError):
                 normalize(raw)
+
+    def test_extreme_timezone_dates_are_rejected_without_parser_crash(self):
+        for value in ("9999-12-31T23:59:59-23:59", "0001-01-01T00:00:00+23:59"):
+            with self.assertRaises(ContractError):
+                instant(value)
+
+    def test_registry_region_requires_a_string(self):
+        document = registry()
+        document["decoys"][0]["locator"]["region"] = []
+        with self.assertRaises(ContractError):
+            Registry(document)
 
 
 if __name__ == "__main__":
