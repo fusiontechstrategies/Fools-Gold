@@ -29,6 +29,7 @@ From the repository directory, in PowerShell:
 
 ```powershell
 $env:PYTHONPATH = 'src'
+python -m pip install --require-hashes -r requirements-dev.txt
 python -m unittest discover -s tests -v
 python -m scripts.run_synthetic_pilot
 ```
@@ -36,6 +37,7 @@ python -m scripts.run_synthetic_pilot
 On Linux:
 
 ```sh
+python -m pip install --require-hashes -r requirements-dev.txt
 PYTHONPATH=src python -m unittest discover -s tests -v
 PYTHONPATH=src python -m scripts.run_synthetic_pilot
 ```

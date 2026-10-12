@@ -3,8 +3,9 @@ import io
 import json
 import tempfile
 import unittest
-import xml.etree.ElementTree as ET
 from pathlib import Path
+
+from defusedxml import ElementTree as ET
 
 from fools_gold.adapters import main
 from fools_gold.cli import main as engine_main
