@@ -671,8 +671,18 @@ class Engine:
             if self._db_path is not None:
                 handle = acquire_database_lock(self._db_path, timeout=timeout)
             try:
-                with self.db:
+                if self.db.in_transaction:
+                    self.db.commit()
+                # IMMEDIATE takes the SQLite write lock up front, so a deferred
+                # read can never race an upgrade to write.
+                self.db.execute("BEGIN IMMEDIATE")
+                try:
                     yield
+                except BaseException:
+                    self.db.rollback()
+                    raise
+                else:
+                    self.db.commit()
             finally:
                 if handle is not None:
                     release_database_lock(handle)
@@ -1492,8 +1502,17 @@ class Engine:
             )
         if path.exists():
             raise ContractError("backup target already exists")
-        with self._write_guard():
+        # VACUUM cannot run inside a transaction; take the writer lock only.
+        handle = None
+        if self._db_path is not None:
+            handle = acquire_database_lock(self._db_path, timeout=60.0)
+        try:
+            if self.db.in_transaction:
+                self.db.commit()
             self.db.execute("VACUUM INTO ?", (str(path),))
+        finally:
+            if handle is not None:
+                release_database_lock(handle)
         return str(path)
 
 
