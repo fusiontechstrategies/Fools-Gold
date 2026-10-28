@@ -17,6 +17,7 @@ All notable changes to Fool's Gold are documented here. The project follows the 
 
 ### Hardened
 
+- Wazuh file delivery now routes open/write/fsync/zero-progress failures through the durable outbox failure path, completes short writes, closes descriptors reliably, and documents at-least-once duplicate ambiguity instead of claiming exactly-once delivery.
 - S3 listings are accepted as documented bucket-level data events (Management retained for older trails), versioned reads carry `context.version_id`, and the Terraform selector now uses a valid bucket-level data-event selector instead of unsupported management-event filtering.
 - Windows collection now aligns with real wevtutil output (empty, concatenated Event roots, wrapped/unwrapped, UTF-16), skips unsupported individual records without aborting a batch, pages oldest-first from a durable cursor with bounded catch-up, and reports log rollover/coverage gaps. State loading validates stored timestamps.
 - Restore validates source SQLite integrity and the complete application schema, checkpoints the destination under an exclusive writer lock, removes stale destination sidecars, and refuses an active database; the single-writer lock is now enforced for file databases.

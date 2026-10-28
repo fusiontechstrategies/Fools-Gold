@@ -98,7 +98,9 @@ $env:FG_SPLUNK_HEC_TOKEN = '<token from protected secret storage>'
 python -m fools_gold --registry examples/registry.synthetic.json --database runtime/pilot.sqlite deliver --format splunk --splunk-host hec.internal.example --splunk-port 8088
 ```
 
-Implemented controls: verified HTTPS with the default certificate trust (no bypass selectable), fixed HEC path with no redirect following, token from `FG_SPLUNK_HEC_TOKEN` only, 64 KiB packets, 4 KiB response bound, 5-second transport timeout, at most three attempts per packet with 1/2-second backoff, 0.25-second send pacing, durable per-attempt failure recording and `--retry-failed` requeueing. Wazuh delivery appends rendered records to an operator-selected local file with POSIX 0600 protection on creation and fsync. Every packet is keyed by `alert_id`, so repeated runs cannot duplicate delivery.
+Implemented controls: verified HTTPS with the default certificate trust (no bypass selectable), fixed HEC path with no redirect following, token from `FG_SPLUNK_HEC_TOKEN` only, 64 KiB packets, 4 KiB response bound, 5-second transport timeout, at most three attempts per packet with 1/2-second backoff, 0.25-second send pacing, durable per-attempt failure recording and `--retry-failed` requeueing. Wazuh delivery appends rendered records to an operator-selected local file with POSIX 0600 protection on creation, short-write handling and fsync; open, write, zero-progress and fsync failures all take the durable failure path.
+
+Duplicate handling is at-least-once, not exactly-once: a crash after the sink accepted a packet but before the SQLite commit leaves the outbox row pending, so a retry can append the same alert again. Downstream deduplication should key on `fg_alert_id`. Partial trailing lines are possible after a mid-write crash and should be ignored on ingest.
 
 Still true: transport receipt is not Splunk indexing, not Wazuh manager ingestion and not analyst acknowledgment; `send_splunk_mock` remains a loopback-only test helper; the mock test suite does not exercise Wazuh's decoder or Splunk's indexer; Windows ACL hardening and endpoint acceptance evidence are deployment tasks.
 

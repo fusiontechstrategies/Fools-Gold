@@ -99,16 +99,33 @@ def wazuh_append(path, packet: bytes):
         )
     # O_BINARY prevents Windows CRLF translation from rewriting JSONL delimiters.
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
-    if os.name != "nt":
-        # Protect a newly created transport file on POSIX; Windows needs ACLs.
-        descriptor = os.open(target, flags, 0o600)
-    else:
-        descriptor = os.open(target, flags)
     try:
-        os.write(descriptor, packet)
-        os.fsync(descriptor)
+        if os.name != "nt":
+            # Protect a newly created transport file on POSIX; Windows needs ACLs.
+            descriptor = os.open(target, flags, 0o600)
+        else:
+            descriptor = os.open(target, flags)
+    except OSError as exc:
+        raise ContractError("Wazuh output could not be opened") from exc
+    try:
+        written = 0
+        while written < len(packet):
+            try:
+                count = os.write(descriptor, packet[written:])
+            except OSError as exc:
+                raise ContractError("Wazuh output write failed") from exc
+            if count <= 0:
+                raise ContractError("Wazuh output made no write progress")
+            written += count
+        try:
+            os.fsync(descriptor)
+        except OSError as exc:
+            raise ContractError("Wazuh output fsync failed") from exc
     finally:
-        os.close(descriptor)
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
 
 
 def deliver(
