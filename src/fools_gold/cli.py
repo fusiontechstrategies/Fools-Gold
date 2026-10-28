@@ -101,17 +101,24 @@ def run_windows_collector(
     if state_file and state.get("log_epoch") not in (None, log_epoch):
         print(
             "Fool's Gold collector: log epoch changed; restarting from the "
-            "newest event",
+            "oldest event",
             file=sys.stderr,
         )
-        state = {"log_epoch": log_epoch, "last_record_id": None}
+        state = {"log_epoch": log_epoch, "last_record_id": None, "generation": 0}
+    generation = state.get("generation", 0)
+
+    def effective_epoch():
+        # Record ids are only unique within one log generation. Bump the
+        # generation on clear/rollover so replayed ids cannot collide.
+        return f"{log_epoch}#g{generation}"
+
     try:
         while True:
             since = state.get("last_record_id")
             for _ in range(pages_per_cycle):
                 events, report = collect(
                     registry,
-                    log_epoch=log_epoch,
+                    log_epoch=effective_epoch(),
                     fetch=fetch,
                     max_events=max_events,
                     since_record_id=since,
@@ -128,13 +135,19 @@ def run_windows_collector(
                     print(
                         "Fool's Gold collector: coverage gap - log rollover "
                         f"detected (cursor {since}, observed "
-                        f"{report['observed_min']})",
+                        f"{report['observed_min']}); starting generation "
+                        f"{generation + 1}",
                         file=sys.stderr,
                     )
+                    generation += 1
                     since = 0
                 else:
                     since = report["next_since"]
-                state = {"log_epoch": log_epoch, "last_record_id": since}
+                state = {
+                    "log_epoch": log_epoch,
+                    "last_record_id": since,
+                    "generation": generation,
+                }
                 if state_file:
                     save_state(state_file, state)
                 if report["fetched"] < max_events and not report["rolled_over"]:

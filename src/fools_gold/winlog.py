@@ -131,7 +131,10 @@ def collect(
         _, _, probe_observed, _ = windows_events_batch(
             probe, log_epoch=log_epoch, max_events=max_events
         )
-        rolled_over = bool(probe_observed) and min(probe_observed) <= since_record_id
+        # Rollover means record ids went *backwards* (clear/reset). Ordinary
+        # inactivity returns the same or older ids than the cursor but must not
+        # be treated as a gap.
+        rolled_over = bool(probe_observed) and max(probe_observed) < since_record_id
         observed = probe_observed if rolled_over else observed
     events = []
     for item in mapped:
@@ -166,19 +169,24 @@ def load_state(path) -> dict:
     if len(payload) > MAX_STATE_BYTES:
         raise ContractError("collector state exceeds bounds")
     document = parse_json(payload)
-    if not isinstance(document, dict) or set(document) != {
-        "log_epoch",
-        "last_record_id",
-        "updated_at",
-    }:
+    required = {"log_epoch", "last_record_id", "updated_at"}
+    allowed = required | {"generation"}
+    if (
+        not isinstance(document, dict)
+        or not required <= set(document)
+        or not set(document) <= allowed
+    ):
         raise ContractError("collector state has an unexpected shape")
     if not isinstance(document["log_epoch"], str) or not document["log_epoch"]:
         raise ContractError("collector state has an invalid log epoch")
     cursor = document["last_record_id"]
     if cursor is not None and (type(cursor) is not int or cursor < 0):
         raise ContractError("collector state has an invalid cursor")
+    generation = document.get("generation", 0)
+    if type(generation) is not int or generation < 0:
+        raise ContractError("collector state has an invalid generation")
     instant(document["updated_at"])
-    return document
+    return {**document, "generation": generation}
 
 
 def save_state(path, state: dict, now=None) -> None:
@@ -194,6 +202,7 @@ def save_state(path, state: dict, now=None) -> None:
         {
             "log_epoch": state.get("log_epoch"),
             "last_record_id": state.get("last_record_id"),
+            "generation": state.get("generation", 0),
             "updated_at": stamp(now or datetime.now(UTC)),
         }
     ).encode()

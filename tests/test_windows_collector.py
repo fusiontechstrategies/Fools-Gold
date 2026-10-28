@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -172,6 +173,88 @@ class CollectorCursorTests(unittest.TestCase):
         self.assertEqual(len(emitted), 5)
         self.assertIn('"record_id":"10"', emitted[-1])
         self.assertEqual(load_state(self.state)["last_record_id"], 10)
+
+    def test_idle_polls_do_not_report_rollover_or_replay(self):
+        records = [(index, win_event(index)) for index in range(1, 4)]
+        save_state(
+            self.state,
+            {
+                "log_epoch": "synthetic-installation-1",
+                "last_record_id": 3,
+                "generation": 0,
+            },
+        )
+        for _ in range(3):
+            code, output, error = self.run_collector(records)
+            self.assertEqual(code, 0)
+            self.assertEqual(output, "")
+            self.assertNotIn("coverage gap", error)
+            state = load_state(self.state)
+            self.assertEqual(state["last_record_id"], 3)
+            self.assertEqual(state["generation"], 0)
+
+    def test_clear_bumps_generation_and_prevents_evidence_collisions(self):
+        from fools_gold.core import Engine
+        from tests.test_pilot import NOW
+
+        engine = Engine(
+            Registry(registry()), self.folder / "evidence.sqlite"
+        )
+        try:
+            before = [(index, win_event(index)) for index in range(1, 4)]
+            _, output, _ = self.run_collector(before)
+            for line in output.splitlines():
+                engine.process(json.loads(line), NOW)
+            self.assertEqual(engine.report()["decisions"]["alert"], 3)
+            save_state(
+                self.state,
+                {
+                    "log_epoch": "synthetic-installation-1",
+                    "last_record_id": 300,
+                    "generation": 0,
+                },
+            )
+            after = [
+                (
+                    index,
+                    win_event(index).replace(
+                        b'<Data Name="AccessMask">0x1</Data>',
+                        b'<Data Name="AccessMask">0x3</Data>',
+                    ),
+                )
+                for index in range(1, 4)
+            ]
+            code, output, error = self.run_collector(after)
+            self.assertEqual(code, 0)
+            self.assertIn("coverage gap", error)
+            self.assertEqual(len(output.splitlines()), 3)
+            for line in output.splitlines():
+                engine.process(json.loads(line), NOW)
+            self.assertIn(
+                '"log_epoch":"synthetic-installation-1#g1"',
+                output.splitlines()[0],
+            )
+            self.assertEqual(engine.report()["decisions"]["alert"], 6)
+            state = load_state(self.state)
+            self.assertEqual(state["generation"], 1)
+            self.assertEqual(state["last_record_id"], 3)
+        finally:
+            engine.close()
+
+    def test_legacy_state_without_generation_still_loads(self):
+        self.state.write_text(
+            json.dumps(
+                {
+                    "log_epoch": "synthetic-installation-1",
+                    "last_record_id": 7,
+                    "updated_at": "2026-10-02T12:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        state = load_state(self.state)
+        self.assertEqual(state["generation"], 0)
+        self.assertEqual(state["last_record_id"], 7)
 
     def test_rollover_reports_a_coverage_gap_and_recovers(self):
         records = [(index, win_event(index)) for index in range(1, 4)]
