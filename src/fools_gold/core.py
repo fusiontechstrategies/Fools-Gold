@@ -872,17 +872,25 @@ def restore_database(source, destination) -> str:
         finally:
             check.close()
         temporary = dst.with_suffix(dst.suffix + ".restore-tmp")
-        if temporary.exists():
-            temporary.unlink()
-        with src.open("rb") as reader, temporary.open("wb") as writer:
-            while True:
-                chunk = reader.read(1024 * 1024)
-                if not chunk:
-                    break
-                writer.write(chunk)
-            writer.flush()
-            os.fsync(writer.fileno())
-        os.replace(temporary, dst)
+        try:
+            if temporary.exists():
+                temporary.unlink()
+            with src.open("rb") as reader, temporary.open("wb") as writer:
+                while True:
+                    chunk = reader.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    writer.write(chunk)
+                writer.flush()
+                os.fsync(writer.fileno())
+            os.replace(temporary, dst)
+        except OSError:
+            # Never leave a partial restore file behind.
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise
     except sqlite3.Error as exc:
         raise ContractError("restore source is not a readable database") from exc
     return str(dst)
