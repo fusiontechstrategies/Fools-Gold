@@ -456,7 +456,11 @@ def main(argv=None):
             result = run_assurance(
                 engine,
                 transport_config=_transport_config(args, "assure"),
-                probe=default_live_probe(engine.registry) if args.live else None,
+                probe=(
+                    (lambda: default_live_probe(engine.registry))
+                    if args.live
+                    else None
+                ),
                 wait_seconds=args.wait_seconds,
             )
             print(canonical(result))

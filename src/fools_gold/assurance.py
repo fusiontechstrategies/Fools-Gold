@@ -9,6 +9,7 @@ deployment results.
 
 import json
 import math
+import os
 import platform
 import tempfile
 import time
@@ -224,49 +225,110 @@ def run_check(now: datetime | None = None, transport_config: dict | None = None)
 def default_live_probe(registry: Registry, host: str | None = None) -> dict:
     """Read bounded bytes from registered decoy files present on this host.
 
-    Returns the decoy ids touched so the caller can look for a matching alert.
-    Reading only occurs for decoys registered to this machine name.
+    Returns attempted decoy ids, decoys the probe cannot act on, and the
+    expected actor identities when the platform exposes them (POSIX uid).
+    Windows does not expose the reading SID here, so correlation falls back
+    to new-alert matching for the decoy.
     """
     host = (host or platform.node() or "").casefold()
-    probed = []
+    decoys, unsupported = [], []
+    actors = set()
+    if os.name != "nt":
+        actors.add(f"uid:{os.getuid()}")
     for decoy in registry.decoys[:100]:
         if decoy["source"] not in ("windows.security", "linux.audit"):
+            unsupported.append(decoy["id"])
             continue
         if decoy["locator"]["host"] != host:
+            unsupported.append(decoy["id"])
             continue
         try:
             with open(decoy["locator"]["path"], "rb") as handle:
                 handle.read(64)
         except OSError:
+            unsupported.append(decoy["id"])
             continue
-        probed.append(decoy["id"])
-    return {"decoy_ids": probed, "probed": len(probed)}
+        decoys.append(decoy["id"])
+    return {
+        "decoy_ids": decoys,
+        "probed": len(decoys),
+        "unsupported": unsupported,
+        "actors": sorted(actors),
+    }
 
 
 def _run_live_probe(engine, probe, wait_seconds, sleep, clock):
+    """Run the operator probe and require a correlated new alert per decoy.
+
+    The measurement baseline is captured before the probe acts. Only alerts
+    stored after that baseline, received after the start time, for a probed
+    decoy, and (when the platform exposes it) from the expected actor count
+    as detection. Coverage is required for every attempted decoy.
+    """
     started = clock()
-    outcome = probe() or {}
-    decoys = set(outcome.get("decoy_ids") or [])
-    if not decoys:
+    baseline = {row[0] for row in engine.db.execute("SELECT id FROM alerts")}
+    try:
+        outcome = probe() or {}
+    except Exception as exc:  # noqa: BLE001 - operator-supplied probe boundary
+        return {
+            "passed": False,
+            "reason": f"probe failed: {exc}",
+            "started_at": stamp(started),
+            "attempted": [],
+            "detected": [],
+            "missed": [],
+            "unsupported": [],
+        }
+    attempted = sorted({str(item) for item in (outcome.get("decoy_ids") or [])})
+    unsupported = sorted(
+        {str(item) for item in (outcome.get("unsupported") or [])}
+    )
+    if not attempted:
         return {
             "passed": False,
             "reason": "no registered decoy was readable on this host",
+            "started_at": stamp(started),
+            "attempted": [],
+            "detected": [],
+            "missed": [],
+            "unsupported": unsupported,
         }
+    expected_actors = set(outcome.get("actors") or []) or None
+    detected = set()
     deadline = started.timestamp() + wait_seconds
     while clock().timestamp() <= deadline:
-        for (evidence,) in engine.db.execute("SELECT evidence FROM alerts"):
+        for alert_id, evidence in engine.db.execute(
+            "SELECT id,evidence FROM alerts"
+        ):
+            if alert_id in baseline:
+                continue
             alert = json.loads(evidence)
-            if alert["decoy_id"] in decoys and instant(alert["observed_at"]) >= started:
-                return {
-                    "passed": True,
-                    "alert_id": alert["alert_id"],
-                    "decoy_ids": sorted(decoys),
-                }
+            if alert["decoy_id"] not in attempted:
+                continue
+            if (
+                expected_actors is not None
+                and alert["event"]["actor"] not in expected_actors
+            ):
+                continue
+            if instant(alert["observed_at"]) < started:
+                continue
+            detected.add(alert["decoy_id"])
+        if len(detected) == len(attempted):
+            break
         sleep(1)
+    missed = sorted(set(attempted) - detected)
     return {
-        "passed": False,
-        "reason": "no alert observed within the wait window",
-        "decoy_ids": sorted(decoys),
+        "passed": not missed,
+        "started_at": stamp(started),
+        "attempted": attempted,
+        "detected": sorted(detected),
+        "missed": missed,
+        "unsupported": unsupported,
+        **(
+            {"reason": "no alert observed for every attempted decoy"}
+            if missed
+            else {}
+        ),
     }
 
 

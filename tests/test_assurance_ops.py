@@ -38,10 +38,16 @@ class RunAssuranceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             engine = engine_at(folder)
             try:
-                engine.process(s3(), NOW)
-
                 def probe():
+                    # Detection must arrive after the probe baseline.
+                    engine.process(s3(), NOW + timedelta(seconds=1))
                     return {"decoy_ids": ["synthetic-s3-backup"], "probed": 1}
+
+                step = {"now": NOW - timedelta(seconds=1)}
+
+                def clock():
+                    step["now"] += timedelta(seconds=1)
+                    return step["now"]
 
                 result = run_assurance(
                     engine,
@@ -49,7 +55,7 @@ class RunAssuranceTests(unittest.TestCase):
                     probe=probe,
                     wait_seconds=1,
                     sleep=lambda _seconds: None,
-                    clock=lambda: NOW,
+                    clock=clock,
                 )
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["mode"], "live")
