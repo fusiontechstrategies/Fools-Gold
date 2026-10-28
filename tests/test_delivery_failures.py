@@ -11,7 +11,6 @@ from fools_gold.core import Engine, Registry
 from fools_gold.transport import deliver
 from tests.test_pilot import NOW, registry, s3
 
-
 REAL_WRITE = os.write
 
 

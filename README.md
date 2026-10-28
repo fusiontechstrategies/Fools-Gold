@@ -43,7 +43,9 @@ python -m fools_gold demo --out runtime/demo
 python -m fools_gold --registry runtime/demo/registry.json --database runtime/demo/evidence.sqlite serve --port 8080
 ```
 
-`demo` writes a synthetic registry, evidence database and a standalone HTML report. `serve` requires a bearer token of 16+ characters in `FG_UI_TOKEN` (or `--token-file`) and binds only `127.0.0.1`; it exposes `/api/alerts`, `/api/report`, `/api/integrity`, `/api/incidents`, `/api/assurance`, `/healthz` and Prometheus `/metrics`.
+`demo` writes a synthetic registry, evidence database and a standalone HTML report. `serve` binds only `127.0.0.1` and requires a 16+ character token from `FG_UI_TOKEN` (or `--token-file`). Browsing to the dashboard redirects to a login form; the token is exchanged for a short-lived HttpOnly, SameSite=Strict session cookie (never placed in a URL or persistent storage) and form actions carry a CSRF token. Scripts can keep using `Authorization: Bearer <token>` against `/api/*`, `/metrics` and `/healthz`.
+
+The dashboard shows summary cards, alert filters (search, source, decoy, route, acknowledgment), stable pagination, alert details with event/receipt/delivery/acknowledgment times, incidents, delivery state and the evidence view. `/api/assurance` and `/api/integrity` report assurance history and chain state.
 
 For a real registry, `init` writes a validated starter document:
 

@@ -15,6 +15,10 @@ All notable changes to Fool's Gold are documented here. The project follows the 
 - **Artifacts:** Dockerfile, Compose file, systemd inbox service/timer, Terraform skeleton, and Splunk/Elastic/Sentinel starter content.
 - **Tests:** 202 tests including adversarial, hardening and maintenance coverage.
 
+### Enhanced
+
+- The dashboard is browser-usable: login form with short-lived HttpOnly session cookies, CSRF-protected acknowledgment, alert filters (search/source/decoy/route/ack), stable pagination, alert detail with event/receipt/delivery/acknowledgment times, incidents view and summary cards, while the bearer API and metrics endpoint remain available.
+
 ### Hardened
 
 - Wazuh file delivery now routes open/write/fsync/zero-progress failures through the durable outbox failure path, completes short writes, closes descriptors reliably, and documents at-least-once duplicate ambiguity instead of claiming exactly-once delivery.

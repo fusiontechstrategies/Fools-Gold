@@ -29,7 +29,7 @@
 
 **Assurance:** `assure --live` reads up to 64 bytes from decoy files registered to this machine name only, then waits for the resulting alert. It never reads non-decoy paths and never writes to decoys.
 
-**Dashboard:** `serve` binds only `127.0.0.1`, requires a 16+ character bearer token compared in constant time, serves no files from disk, bounds request bodies to 4 KiB and exposes acknowledgment only through `POST /api/acknowledge`. Acknowledgment via the dashboard is still an unauthenticated-identity operator action; put it behind your own access control.
+**Dashboard:** `serve` binds only `127.0.0.1`, serves no files from disk, bounds request bodies to 4 KiB, caps pages at 100 rows and sets a 10-second socket timeout. The login form exchanges the 16+ character token (constant-time comparison) for a server-side session that expires after 8 hours; the cookie is HttpOnly, SameSite=Strict and session-scoped, the token never appears in URLs or logs, and form posts require a per-session CSRF token. `/api/*` and `/metrics` accept only the bearer token. Acknowledgment is still an unauthenticated-identity operator action; put the dashboard behind your own access control if identity matters.
 
 **Bundles:** `bundle` hashes every entry and signs the manifest with HMAC-SHA256 when an evidence key is configured; `verify-bundle` reports `signature: unverified` when no key is supplied. Holding the key allows re-signing, so keep it outside the monitored host.
 

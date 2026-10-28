@@ -197,8 +197,12 @@ class DashboardTests(unittest.TestCase):
         status, _ = self.get("/healthz")
         self.assertEqual(status, 200)
 
-    def test_unauthenticated_requests_are_rejected(self):
-        for path in ("/", "/api/alerts", "/metrics"):
+    def test_unauthenticated_browsing_redirects_to_login(self):
+        request = urllib.request.Request(self.base + "/")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("login", response.read().decode().lower())
+        for path in ("/api/alerts", "/metrics"):
             with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as caught:
                 self.get(path)
             self.assertEqual(caught.exception.code, 401)
@@ -214,7 +218,7 @@ class DashboardTests(unittest.TestCase):
         status, body = self.get("/api/incidents", TOKEN)
         self.assertEqual(len(json.loads(body)["incidents"]), 1)
         status, body = self.get("/", TOKEN)
-        self.assertIn("Fool's Gold", body)
+        self.assertIn("alerts", body)
 
     def test_acknowledge_via_api_and_double_ack_fails(self):
         alerts = list(self.engine.export_alerts())

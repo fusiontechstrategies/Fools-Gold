@@ -60,7 +60,7 @@ Paging is oldest-first from a durable `EventRecordID` cursor. Pass `--state-file
 | `init` | Validated starter registry, optional 32-byte key file | new files |
 | `plant` | Watermarked synthetic decoy files (`aws-credentials`, `ssh-key`, `config-export`) | new files (0600 on POSIX) |
 | `demo` | Synthetic registry, evidence DB and standalone HTML report | new files |
-| `serve` | Loopback dashboard, `/api/*`, `/healthz`, Prometheus `/metrics`; bearer token required | none |
+| `serve` | Loopback dashboard with login/session auth, filters, alert detail, acknowledgment, incidents, `/api/*`, `/healthz`, Prometheus `/metrics` | none |
 | `incidents` | Per-actor alert clusters with ATT&CK tags | none |
 | `bundle` / `verify-bundle` | Tamper-evident evidence zip with hashes and HMAC manifest | new file |
 | `prune` / `backup` / `restore` | Retention and recovery (WAL-safe `VACUUM INTO`) | DB / new file |
