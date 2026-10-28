@@ -22,13 +22,21 @@ HEC_PATH = "/services/collector/event"
 TOKEN_VARIABLE = "FG_SPLUNK_HEC_TOKEN"
 
 
-def hec_token() -> str:
-    value = os.environ.get(TOKEN_VARIABLE, "")
-    if not value or len(value) > 256 or any(ord(c) < 32 for c in value):
+def _valid_token(value) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 256
+        or any(ord(c) < 32 for c in value)
+    ):
         raise ContractError(
             f"{TOKEN_VARIABLE} must contain a bounded printable token"
         )
     return value
+
+
+def hec_token() -> str:
+    return _valid_token(os.environ.get(TOKEN_VARIABLE, ""))
 
 
 def _https_factory(host: str, port: int):
@@ -89,7 +97,8 @@ def wazuh_append(path, packet: bytes):
         raise ContractError(
             "Wazuh output requires an existing trusted directory and a nonsymlink leaf"
         )
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    # O_BINARY prevents Windows CRLF translation from rewriting JSONL delimiters.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
     if os.name != "nt":
         # Protect a newly created transport file on POSIX; Windows needs ACLs.
         descriptor = os.open(target, flags, 0o600)
@@ -131,7 +140,7 @@ def deliver(
             raise ContractError(
                 "Splunk delivery requires an operator-selected host and port"
             )
-        token = hec_token() if token is None else token
+        token = hec_token() if token is None else _valid_token(token)
     else:
         if wazuh_output is None:
             raise ContractError("Wazuh delivery requires an output file path")

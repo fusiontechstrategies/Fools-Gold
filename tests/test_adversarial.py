@@ -165,6 +165,131 @@ class CliTrailInboxStreamTests(unittest.TestCase):
             engine.close()
 
 
+class NewlyFixedDefectTests(unittest.TestCase):
+    def test_outbox_error_text_is_sanitized_not_fatal(self):
+        engine = Engine(Registry(registry()), ":memory:")
+        try:
+            engine.process(s3(), NOW)
+            engine.outbox_enqueue("wazuh", NOW)
+            alert_id = engine.outbox_batch("wazuh", 10)[0][0]
+            engine.outbox_mark(
+                "wazuh", alert_id, "failed", NOW, error="line\nbreak\t" + "x" * 5000
+            )
+            stored = engine.db.execute(
+                "SELECT last_error FROM outbox WHERE alert_id=?", (alert_id,)
+            ).fetchone()[0]
+            self.assertLessEqual(len(stored), 256)
+            self.assertFalse(any(ord(c) < 32 for c in stored))
+        finally:
+            engine.close()
+
+    def test_wazuh_output_uses_lf_only_line_endings(self):
+        engine = Engine(Registry(registry()), ":memory:")
+        try:
+            engine.process(s3(), NOW)
+            with tempfile.TemporaryDirectory() as folder:
+                sink = Path(folder) / "out.log"
+                deliver(engine, "wazuh", NOW, wazuh_output=str(sink))
+                raw = sink.read_bytes()
+                self.assertIn(b"\n", raw)
+                self.assertNotIn(b"\r\n", raw)
+        finally:
+            engine.close()
+
+    def test_explicit_empty_token_is_rejected(self):
+        engine = Engine(Registry(registry()), ":memory:")
+        try:
+            engine.process(s3(), NOW)
+            for token in ("", "\n", " " * 300):
+                with self.assertRaises(ContractError):
+                    deliver(
+                        engine,
+                        "splunk",
+                        NOW,
+                        splunk_host="hec.example",
+                        splunk_port=8088,
+                        token=token,
+                    )
+        finally:
+            engine.close()
+
+    def test_check_rejects_port_without_host(self):
+        import contextlib
+        import io
+
+        from fools_gold.cli import main
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["check", "--splunk-port", "8088"])
+        self.assertEqual(code, 2)
+        self.assertIn("requires --splunk-host", err.getvalue())
+
+    def test_collect_windows_cli_validates_interval(self):
+        import contextlib
+        import io
+
+        from fools_gold.cli import main
+
+        with tempfile.TemporaryDirectory() as folder:
+            registry_path = Path(folder) / "registry.json"
+            registry_path.write_text(json.dumps(registry()), encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(
+                    [
+                        "--registry",
+                        str(registry_path),
+                        "collect-windows",
+                        "--log-epoch",
+                        "generation-1",
+                        "--interval-seconds",
+                        "0",
+                    ]
+                )
+            self.assertEqual(code, 2)
+            self.assertIn("--interval-seconds", err.getvalue())
+
+    def test_collect_windows_requires_registry_before_platform(self):
+        import contextlib
+        import io
+
+        from fools_gold.cli import main
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["collect-windows", "--log-epoch", "generation-1"])
+        self.assertEqual(code, 2)
+        self.assertIn("requires --registry", err.getvalue())
+
+    def test_collect_windows_reports_platform_guard_on_posix(self):
+        import contextlib
+        import io
+        import os
+
+        from fools_gold.cli import main
+
+        if os.name == "nt":
+            # Never invoke the real Security log from the test suite.
+            self.skipTest("POSIX-only assertion")
+        with tempfile.TemporaryDirectory() as folder:
+            registry_path = Path(folder) / "registry.json"
+            registry_path.write_text(json.dumps(registry()), encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(
+                    [
+                        "--registry",
+                        str(registry_path),
+                        "collect-windows",
+                        "--log-epoch",
+                        "generation-1",
+                    ]
+                )
+            self.assertEqual(code, 2)
+            self.assertIn("requires Windows", err.getvalue())
+
+
 class BoundaryValidationTests(unittest.TestCase):
     def test_query_bounds_are_validated_before_platform_check(self):
         from fools_gold.winlog import query_security_log

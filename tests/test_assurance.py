@@ -133,7 +133,7 @@ class AssuranceCliTests(unittest.TestCase):
         self.assertIn("requires --registry and --database", err.getvalue())
 
     def test_s3_fixture_still_matches_the_shared_registry(self):
-        self.assertEqual(len(registry()["decoys"]), 2)
+        self.assertEqual(len(registry()["decoys"]), 3)
         self.assertTrue(s3("synthetic-s3-001")["eventID"].startswith("synthetic"))
 
 

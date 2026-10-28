@@ -51,18 +51,32 @@ def _mapped_from_event_element(root, log_epoch: str) -> dict:
     system = one(root, "System")
     event_data = one(root, "EventData")
     event_id = text(one(system, "EventID").text, "XML event ID", 16)
-    if event_id != "4663":
-        raise ContractError("Windows XML adapter supports only event 4663")
+    if event_id not in ("4663", "4656"):
+        raise ContractError(
+            "Windows XML adapter supports only events 4663 and 4656"
+        )
     keywords = text(one(system, "Keywords").text, "audit keywords", 18)
     if not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", keywords):
         raise ContractError("invalid audit keywords")
     bits = int(keywords, 16)
     # Windows event keyword bits: success 0x0020000000000000,
     # failure 0x0010000000000000. Never infer outcome from EventID alone.
-    if not bits & 0x0020000000000000 or bits & 0x0010000000000000:
-        raise ContractError(
-            "Windows XML must carry Audit Success without Audit Failure"
-        )
+    success = bool(bits & 0x0020000000000000)
+    failure = bool(bits & 0x0010000000000000)
+    if event_id == "4663":
+        if not success or failure:
+            raise ContractError(
+                "Windows XML 4663 must carry Audit Success without Audit Failure"
+            )
+        audit_outcome = "success"
+    else:
+        # 4656 is the denied-access tripwire; a success-keyword 4656 is not
+        # the contract this pilot documents.
+        if not failure or success:
+            raise ContractError(
+                "Windows XML 4656 must carry Audit Failure without Audit Success"
+            )
+        audit_outcome = "failure"
     fields = {}
     for node in event_data:
         if node.tag != prefix + "Data" or len(node):
@@ -91,8 +105,8 @@ def _mapped_from_event_element(root, log_epoch: str) -> dict:
         "source": "windows.security",
         "provider": one(system, "Provider").attrib.get("Name"),
         "channel": one(system, "Channel").text,
-        "event_id": 4663,
-        "audit_outcome": "success",
+        "event_id": int(event_id),
+        "audit_outcome": audit_outcome,
         "object_type": fields["ObjectType"],
         "computer": one(system, "Computer").text,
         "log_epoch": log_epoch,

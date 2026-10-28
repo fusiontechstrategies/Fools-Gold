@@ -58,6 +58,15 @@ python -m fools_gold check
 
 `check` uses its own canary registry and a temporary database. Add `--wazuh-output` or `--splunk-host`/`--splunk-port` (plus `FG_SPLUNK_HEC_TOKEN` in the environment) to exercise configured delivery as well.
 
+On a Windows host with the file SACL configured, emit registered-decoy events as contract JSONL and ingest them:
+
+```powershell
+python -m fools_gold --registry examples/registry.synthetic.json collect-windows --log-epoch <collector-generation-id> > runtime/windows-events.jsonl
+python -m fools_gold --registry examples/registry.synthetic.json --database runtime/pilot.sqlite ingest runtime/windows-events.jsonl
+```
+
+The query is fixed to event 4663 and only registered locations are emitted; `--follow --interval-seconds N` repeats it until interrupted, and non-contract events are counted on stderr.
+
 For persisted synthetic evidence:
 
 ```powershell

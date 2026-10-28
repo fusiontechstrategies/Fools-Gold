@@ -52,6 +52,20 @@ def registry():
                 "expected_actions": ["read", "write", "append", "delete"],
                 "response_procedure": "Synthetic triage: inspect process and confirm authorized testing",
             },
+            {
+                "id": "synthetic-linux-config",
+                "owner": "synthetic-soc",
+                "source": "linux.audit",
+                "locator": {
+                    "host": "synthetic-linux01",
+                    "path": "/opt/decoys/config-export.txt",
+                },
+                "created_at": "2026-10-01T00:00:00Z",
+                "expires_at": "2026-11-01T00:00:00Z",
+                "expected_actions": ["read", "write", "append", "delete", "recon"],
+                "response_procedure": "Synthetic triage: inspect uid, process and path",
+                "route": "soc-primary",
+            },
         ],
     }
 

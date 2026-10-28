@@ -34,6 +34,13 @@ Source authentication, original export retention and collection audit policy are
 
 `fools_gold.winlog.collect` runs one fixed `wevtutil` XPath query for event 4663 against the local Security log and maps the returned XML envelope through the same hardened parsing as exports. Only events whose normalized host/path match a registered decoy are emitted; contract failures are skipped with a visible count and never silently accepted. Requires Windows; the query is collector configuration, never event-driven.
 
+```powershell
+python -m fools_gold --registry examples/registry.synthetic.json collect-windows --log-epoch synthetic-installation-1 > runtime/windows-events.jsonl
+python -m fools_gold --registry examples/registry.synthetic.json --database runtime/pilot.sqlite ingest runtime/windows-events.jsonl
+```
+
+`--follow --interval-seconds N` (1–3600) repeats the query until interrupted; `--max-events` caps each query at 128. The command needs only `--registry`.
+
 ### CloudTrail log inbox
 
 `fools_gold.trail_inbox.cloudtrail_records_file` processes one CloudTrail log file that already landed in an operator-managed directory (fetching from S3 stays a credential-scoped deployment concern, such as a sync job). Bounds: 16 MiB per file, 10,000 records, 64 KiB per record, bounded gzip decompression. The `trail-inbox` command skips files already processed by SHA-256 digest; a file with malformed records stays unmarked so it can be corrected and retried, while deduplication keeps earlier decisions safe.

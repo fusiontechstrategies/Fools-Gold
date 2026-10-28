@@ -11,6 +11,7 @@ import hmac
 import json
 import math
 import ntpath
+import posixpath
 import re
 import sqlite3
 from datetime import UTC, datetime
@@ -107,6 +108,16 @@ def windows_path(value: str) -> str:
     return ntpath.normpath(value).casefold()
 
 
+def posix_path(value: str) -> str:
+    value = text(value, "POSIX object path")
+    if not value.startswith("/") or "\x00" in value:
+        raise ContractError("POSIX object path must be an absolute local path")
+    if ".." in value.split("/"):
+        raise ContractError("POSIX object path must not contain parent traversal")
+    # POSIX paths stay case sensitive: normpath only collapses separators.
+    return posixpath.normpath(value)
+
+
 def windows_host(value: str) -> str:
     value = text(value, "Windows host", 255)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", value):
@@ -122,6 +133,30 @@ def required_dict(value, name):
     return value
 
 
+WINDOWS_EVENT_OUTCOMES = {4663: "success", 4656: "failure"}
+GOVCLOUD_REGIONS = {"us-gov-east-1", "us-gov-west-1"}
+S3_OPERATIONS = {
+    "GetObject": (["read"], False),
+    "GetObjectVersion": (["read"], False),
+    "HeadObject": (["recon"], False),
+    "PutObject": (["write"], False),
+    "CopyObject": (["write"], False),
+    "DeleteObject": (["delete"], False),
+    "ListObjects": (["recon"], True),
+    "ListObjectsV2": (["recon"], True),
+}
+LINUX_AUDIT_ACTIONS = {"read", "write", "append", "delete", "recon"}
+DOCUMENTED_ACTION_SETS = (
+    ["read"],
+    ["write"],
+    ["delete"],
+    ["recon"],
+    ["read", "recon"],
+    ["read", "write", "append", "delete"],
+    ["read", "write", "append", "delete", "recon"],
+)
+
+
 def normalize(raw: dict) -> dict:
     required_dict(raw, "event")
     if raw.get("source") == "windows.security":
@@ -131,10 +166,20 @@ def normalize(raw: dict) -> dict:
             or raw.get("channel") != "Security"
         ):
             raise ContractError("Windows provider/channel mismatch")
-        if type(raw.get("event_id")) is not int or raw["event_id"] != 4663:
-            raise ContractError("only Windows Security event 4663 is supported")
-        if raw.get("audit_outcome") != "success" or raw.get("object_type") != "File":
-            raise ContractError("4663 contract requires a successful File access audit")
+        event_id = raw.get("event_id")
+        if type(event_id) is not int or event_id not in WINDOWS_EVENT_OUTCOMES:
+            raise ContractError(
+                "only Windows Security events 4663 (success) and 4656 (denied)"
+                " are supported"
+            )
+        expected_audit = WINDOWS_EVENT_OUTCOMES[event_id]
+        if (
+            raw.get("audit_outcome") != expected_audit
+            or raw.get("object_type") != "File"
+        ):
+            raise ContractError(
+                f"{event_id} contract requires a {expected_audit} File access audit"
+            )
         host = windows_host(raw.get("computer"))
         epoch = text(raw.get("log_epoch"), "log epoch", 128)
         record = text(raw.get("record_id"), "record id", 64)
@@ -164,59 +209,112 @@ def normalize(raw: dict) -> dict:
             "actor": text(raw.get("subject_sid"), "subject SID", 256),
             "locator": {"host": host, "path": windows_path(raw.get("object_name"))},
             "actions": actions,
-            "outcome": "success",
+            "outcome": "denied" if event_id == 4656 else "success",
             "context": {"process": text(raw.get("process_name"), "process", 2048)},
         }
-    if (
-        raw.get("eventSource") != "s3.amazonaws.com"
-        or raw.get("eventCategory") != "Data"
-    ):
+    if raw.get("source") == "linux.audit":
+        # Documented Linux audit sensor contract: a collector maps raw auditd
+        # records to these fields; case-sensitive POSIX paths, no aliasing.
+        host = windows_host(raw.get("host"))
+        epoch = text(raw.get("sensor_epoch"), "sensor epoch", 128)
+        record = text(raw.get("record_id"), "record id", 64)
+        if not record.isdecimal():
+            raise ContractError("record id must be decimal")
+        action = text(raw.get("action"), "audit action", 16)
+        if action not in LINUX_AUDIT_ACTIONS:
+            raise ContractError("unsupported Linux audit action")
+        outcome = raw.get("audit_outcome")
+        if outcome not in ("success", "denied"):
+            raise ContractError("Linux audit outcome must be success or denied")
+        return {
+            "schema_version": 1,
+            "source": "linux.audit",
+            "id": f"linux:{host}:{epoch}:{record}",
+            "time": stamp(instant(raw.get("time"))),
+            "actor": "uid:" + text(raw.get("uid"), "uid", 64),
+            "locator": {"host": host, "path": posix_path(raw.get("path"))},
+            "actions": [action],
+            "outcome": outcome,
+            "context": {
+                "process": text(raw.get("process_name", "unknown"), "process", 2048)
+            },
+        }
+    if raw.get("eventSource") != "s3.amazonaws.com":
         raise ContractError(
-            "only S3 CloudTrail data events or the Windows contract are supported"
+            "only S3 CloudTrail events, the Windows contract or linux.audit are"
+            " supported"
         )
+    operation = text(raw.get("eventName"), "S3 operation", 64)
+    if operation not in S3_OPERATIONS:
+        raise ContractError("unsupported S3 operation")
+    actions, prefix_match = S3_OPERATIONS[operation]
+    category = raw.get("eventCategory")
+    if prefix_match:
+        # Bucket listings are management events; they reveal recon of the prefix.
+        if category != "Management":
+            raise ContractError(
+                f"{operation} requires eventCategory Management"
+            )
+    elif category != "Data":
+        raise ContractError("S3 object operations require eventCategory Data")
     region = text(raw.get("awsRegion"), "region", 64)
-    if region not in {"us-gov-east-1", "us-gov-west-1"}:
+    if region not in GOVCLOUD_REGIONS:
         raise ContractError("pilot accepts only AWS GovCloud regions")
     account = text(raw.get("recipientAccountId"), "recipient account", 12)
     if not re.fullmatch(r"[0-9]{12}", account):
         raise ContractError("recipient account must contain 12 digits")
     params = required_dict(raw.get("requestParameters"), "request parameters")
     bucket = text(params.get("bucketName"), "bucket", 63)
-    key = text(params.get("key"), "key", 1024)
-    arn = f"arn:aws-us-gov:s3:::{bucket}/{key}"
-    resources = raw.get("resources")
-    if not isinstance(resources, list) or not any(
-        isinstance(r, dict)
-        and r.get("type") == "AWS::S3::Object"
-        and r.get("ARN") == arn
-        for r in resources
-    ):
-        raise ContractError(
-            "exact GovCloud object ARN must agree with request parameters"
-        )
-    actions = {"GetObject": "read", "PutObject": "write", "DeleteObject": "delete"}
-    operation = text(raw.get("eventName"), "S3 operation", 64)
-    if operation not in actions:
-        raise ContractError("unsupported S3 operation")
+    if prefix_match:
+        prefix = params.get("prefix", "")
+        if not isinstance(prefix, str) or len(prefix) > 1024:
+            raise ContractError("prefix must be a bounded string")
+        if any(ord(c) < 32 for c in prefix):
+            raise ContractError("prefix contains control characters")
+        arn = f"arn:aws-us-gov:s3:::{bucket}/{prefix}"
+    else:
+        key = text(params.get("key"), "key", 1024)
+        arn = f"arn:aws-us-gov:s3:::{bucket}/{key}"
+        resources = raw.get("resources")
+        if not isinstance(resources, list) or not any(
+            isinstance(r, dict)
+            and r.get("type") == "AWS::S3::Object"
+            and r.get("ARN") == arn
+            for r in resources
+        ):
+            raise ContractError(
+                "exact GovCloud object ARN must agree with request parameters"
+            )
     identity = required_dict(raw.get("userIdentity"), "user identity")
     actor = text(identity.get("arn"), "principal ARN", 2048)
     if not actor.startswith("arn:aws-us-gov:"):
         raise ContractError("principal must use the GovCloud partition")
     if "errorCode" in raw:
         text(raw["errorCode"], "S3 error code", 128)
-    return {
+    event = {
         "schema_version": 1,
         "source": "aws.cloudtrail.s3",
         "id": text(raw.get("eventID"), "event id", 128),
         "time": stamp(instant(raw.get("eventTime"))),
         "actor": actor,
         "locator": {"account": account, "region": region, "arn": arn},
-        "actions": [actions[operation]],
+        "actions": actions,
         "outcome": "denied" if raw.get("errorCode") else "success",
         "context": {
             "source_ip": text(raw.get("sourceIPAddress"), "source address", 256)
         },
     }
+    if prefix_match:
+        event["prefix_match"] = True
+    return event
+
+
+def mitre_techniques(event: dict) -> list[str]:
+    """Coarse ATT&CK hints for triage context, never an attribution claim."""
+    tags = {"T1530"} if event["source"] == "aws.cloudtrail.s3" else {"T1005"}
+    if "recon" in event["actions"]:
+        tags.add("T1526")
+    return sorted(tags)
 
 
 class Registry:
@@ -243,17 +341,25 @@ class Registry:
             if text(d.get("source"), "decoy source", 64) not in {
                 "aws.cloudtrail.s3",
                 "windows.security",
+                "linux.audit",
             }:
                 raise ContractError("unsupported decoy source")
+            if d.get("route") is not None:
+                text(d["route"], "decoy route", 64)
             if instant(d.get("expires_at")) <= instant(d.get("created_at")):
                 raise ContractError("decoy expiry must follow creation")
             loc = dict(required_dict(d.get("locator"), "decoy locator"))
-            if d["source"] == "windows.security":
+            if d["source"] in ("windows.security", "linux.audit"):
                 if set(loc) != {"host", "path"}:
-                    raise ContractError("Windows locator requires host and path only")
+                    raise ContractError(
+                        "file locator requires host and path only"
+                    )
+                path_field = (
+                    windows_path if d["source"] == "windows.security" else posix_path
+                )
                 loc = {
                     "host": windows_host(loc["host"]),
-                    "path": windows_path(loc["path"]),
+                    "path": path_field(loc["path"]),
                 }
             else:
                 if set(loc) != {"account", "region", "arn"} or text(
@@ -278,12 +384,7 @@ class Registry:
             if location in locations:
                 raise ContractError("duplicate decoy location")
             locations.add(location)
-            if d.get("expected_actions") not in (
-                ["read"],
-                ["write"],
-                ["delete"],
-                ["read", "write", "append", "delete"],
-            ):
+            if d.get("expected_actions") not in DOCUMENTED_ACTION_SETS:
                 raise ContractError("expected actions must use a documented action set")
             exceptions = d.get("exceptions", [])
             if not isinstance(exceptions, list) or len(exceptions) > 100:
@@ -306,14 +407,23 @@ class Registry:
         self.fingerprint = digest(document)
 
     def match(self, event: dict):
-        return next(
-            (
-                d
-                for d in self.decoys
-                if d["source"] == event["source"] and d["locator"] == event["locator"]
-            ),
-            None,
-        )
+        locator = event["locator"]
+        for d in self.decoys:
+            if d["source"] != event["source"]:
+                continue
+            if event.get("prefix_match"):
+                # A bucket listing matches every registered decoy under the
+                # listed bucket/prefix; the first (registry order) is reported.
+                if (
+                    d["source"] == "aws.cloudtrail.s3"
+                    and d["locator"]["account"] == locator["account"]
+                    and d["locator"]["region"] == locator["region"]
+                    and d["locator"]["arn"].startswith(locator["arn"])
+                ):
+                    return d
+            elif d["locator"] == locator:
+                return d
+        return None
 
 
 class Engine:
@@ -339,7 +449,7 @@ class Engine:
             CREATE TABLE IF NOT EXISTS alerts (
                 id TEXT PRIMARY KEY, decoy TEXT NOT NULL, actor TEXT NOT NULL,
                 opened_at TEXT NOT NULL, received_at TEXT NOT NULL, evidence TEXT NOT NULL,
-                acknowledged_at TEXT, acknowledged_by TEXT
+                acknowledged_at TEXT, acknowledged_by TEXT, route TEXT
             );
             CREATE INDEX IF NOT EXISTS alert_correlation ON alerts(decoy, actor, received_at DESC);
             CREATE TABLE IF NOT EXISTS outbox (
@@ -357,6 +467,7 @@ class Engine:
         migrations = {
             "evidence_mac": "ALTER TABLE alerts ADD COLUMN evidence_mac TEXT",
             "prev_mac": "ALTER TABLE alerts ADD COLUMN prev_mac TEXT",
+            "route": "ALTER TABLE alerts ADD COLUMN route TEXT",
         }
         for name, statement in migrations.items():
             if name not in columns:
@@ -455,6 +566,8 @@ class Engine:
                         "registry_sha256": self.registry.fingerprint,
                         "raw_event_sha256": fingerprint,
                         "related_alert_id": related,
+                        "route": decoy.get("route"),
+                        "mitre_techniques": mitre_techniques(event),
                         "severity": "high",
                         "interpretation": "Unexpected decoy interaction. Investigate before attributing intent.",
                     }
@@ -466,7 +579,7 @@ class Engine:
                     prev_mac = prior_mac[0] if prior_mac else None
                     mac = self.evidence_mac(evidence, prev_mac)
                     self.db.execute(
-                        "INSERT INTO alerts(id,decoy,actor,opened_at,received_at,evidence,evidence_mac,prev_mac) VALUES(?,?,?,?,?,?,?,?)",
+                        "INSERT INTO alerts(id,decoy,actor,opened_at,received_at,evidence,evidence_mac,prev_mac,route) VALUES(?,?,?,?,?,?,?,?,?)",
                         (
                             alert_id,
                             decoy["id"],
@@ -476,6 +589,7 @@ class Engine:
                             canonical(evidence),
                             mac,
                             prev_mac,
+                            decoy.get("route"),
                         ),
                     )
                     result.update(decision="alert", alert=evidence)
@@ -578,7 +692,12 @@ class Engine:
     ):
         if state not in ("sent", "failed"):
             raise ContractError("unsupported outbox state")
-        bounded_error = None if error is None else text(str(error), "outbox error", 256)
+        # Diagnostics must never abort failure recording: sanitize and bound.
+        if error is None:
+            bounded_error = None
+        else:
+            cleaned = "".join(c if ord(c) >= 32 else " " for c in str(error))
+            bounded_error = cleaned.strip()[:256] or None
         self.db.execute(
             "UPDATE outbox SET state=?,attempts=attempts+1,last_error=?,updated_at=? "
             "WHERE payload_format=? AND alert_id=?",

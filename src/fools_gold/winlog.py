@@ -12,7 +12,8 @@ from .collection import windows_events_xml_envelope
 from .core import ContractError, Registry, normalize
 
 MAX_BATCH_EVENTS = 128
-QUERY = "*[System[(EventID=4663)]]"
+# Both successful access (4663) and denied handle attempts (4656).
+QUERY = "*[System[(EventID=4663 or EventID=4656)]]"
 MAX_QUERY_TIMEOUT_SECONDS = 30
 
 

@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -49,6 +50,30 @@ def load_evidence_key(path) -> bytes:
     if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
         raise ContractError("evidence key must be 64 hexadecimal characters (32 bytes)")
     return bytes.fromhex(value)
+
+
+def run_windows_collector(
+    registry: Registry, *, log_epoch, follow, interval_seconds, max_events
+):
+    from .winlog import collect
+
+    try:
+        while True:
+            events, skipped = collect(
+                registry, log_epoch=log_epoch, max_events=max_events
+            )
+            for event in events:
+                print(canonical(event))
+            if skipped:
+                print(
+                    f"Fool's Gold collector: skipped {skipped} non-contract event(s)",
+                    file=sys.stderr,
+                )
+            if not follow:
+                return 0
+            time.sleep(interval_seconds)
+    except KeyboardInterrupt:
+        return 0
 
 
 def run_trail_inbox(engine: Engine, directory: str):
@@ -134,6 +159,22 @@ def main(argv=None):
         "trail-inbox", help="Process CloudTrail log files from a local inbox directory"
     )
     inbox.add_argument("directory")
+    collector = commands.add_parser(
+        "collect-windows",
+        help="Emit contract JSONL for registered decoy locations from the local Security log",
+    )
+    collector.add_argument(
+        "--log-epoch", required=True, help="Collector-supplied log generation identity"
+    )
+    collector.add_argument(
+        "--follow", action="store_true", help="Repeat the query until interrupted"
+    )
+    collector.add_argument(
+        "--interval-seconds", type=int, default=5, help="Follow-mode poll interval"
+    )
+    collector.add_argument(
+        "--max-events", type=int, default=128, help="Maximum events per query"
+    )
     ack = commands.add_parser(
         "acknowledge", help="Record a local analyst acknowledgment"
     )
@@ -174,10 +215,24 @@ def main(argv=None):
         # Protect new POSIX runtime files. Windows deployment requires explicit ACLs.
         if os.name != "nt":
             os.umask(0o077)
+        if args.command == "collect-windows":
+            if not args.registry:
+                raise ContractError("collect-windows requires --registry")
+            if not 1 <= args.interval_seconds <= 3600:
+                raise ContractError("--interval-seconds must be 1 to 3600")
+            return run_windows_collector(
+                load_registry(args.registry),
+                log_epoch=args.log_epoch,
+                follow=args.follow,
+                interval_seconds=args.interval_seconds,
+                max_events=args.max_events,
+            )
         if args.command == "check":
             transport_config = None
             if (args.splunk_host is not None) and (args.wazuh_output is not None):
                 raise ContractError("check accepts at most one transport target")
+            if args.splunk_host is None and args.splunk_port is not None:
+                raise ContractError("check --splunk-port requires --splunk-host")
             if args.splunk_host is not None:
                 if args.splunk_port is None:
                     raise ContractError("check Splunk transport requires --splunk-port")
