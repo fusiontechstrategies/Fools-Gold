@@ -5,6 +5,7 @@ No network calls, deployment, containment, or source content reads occur here.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import hmac
@@ -15,6 +16,8 @@ import os
 import posixpath
 import re
 import sqlite3
+import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -171,19 +174,27 @@ def _unlock_file(handle):
         pass
 
 
-def acquire_database_lock(database: str | Path):
-    """Take the single-writer advisory lock; returns the open lock handle."""
+def acquire_database_lock(database: str | Path, *, timeout: float = 0.0):
+    """Take the short-lived writer lock; returns the open lock handle.
+
+    Writers serialize per transaction (not for the engine lifetime) so the
+    dashboard, ingestion and delivery can coexist. A timeout lets concurrent
+    CLI writers queue instead of failing outright.
+    """
     lock_path = Path(str(database) + ".lock")
     if lock_path.is_symlink() or not lock_path.parent.is_dir():
         raise ContractError(
             "database requires an existing trusted directory and a nonsymlink lock leaf"
         )
     handle = open(lock_path, "a+b")
-    if not _lock_file(handle):
-        handle.close()
-        raise ContractError(
-            "database is locked by another Fool's Gold writer; use one writer per database"
-        )
+    deadline = time.monotonic() + max(0.0, timeout)
+    while not _lock_file(handle):
+        if time.monotonic() >= deadline:
+            handle.close()
+            raise ContractError(
+                "database is locked by another Fool's Gold writer; retry shortly"
+            )
+        time.sleep(0.05)
     return handle
 
 
@@ -192,6 +203,119 @@ def release_database_lock(handle):
         _unlock_file(handle)
     finally:
         handle.close()
+
+
+SESSION_SLOTS = 64
+
+
+class SessionLock:
+    """Lifetime session marker used to make restore exclusive.
+
+    POSIX takes a shared flock per session so destinations can be replaced only
+    when no session holds the database. Windows has no shared lock, so each
+    session locks one byte-range slot and restore must lock all slots.
+    """
+
+    def __init__(self, database: str | Path):
+        self.path = Path(str(database) + ".session")
+        self.handle = None
+        self.slot = None
+
+    def acquire(self, *, exclusive: bool = False, timeout: float = 0.0):
+        if self.path.is_symlink() or not self.path.parent.is_dir():
+            raise ContractError(
+                "database requires an existing trusted directory and a nonsymlink session leaf"
+            )
+        handle = open(self.path, "a+b")
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() < SESSION_SLOTS:
+            handle.write(b"\0" * (SESSION_SLOTS - handle.tell()))
+            handle.flush()
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            if os.name == "nt":
+                import msvcrt
+
+                if exclusive:
+                    acquired = []
+                    try:
+                        for slot in range(SESSION_SLOTS):
+                            handle.seek(slot)
+                            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                            acquired.append(slot)
+                    except OSError:
+                        for slot in acquired:
+                            handle.seek(slot)
+                            try:
+                                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                            except OSError:
+                                pass
+                        if time.monotonic() >= deadline:
+                            handle.close()
+                            raise ContractError(
+                                "another Fool's Gold session is using the database"
+                            )
+                        time.sleep(0.05)
+                        continue
+                    self.slot = "all"
+                else:
+                    for slot in range(SESSION_SLOTS):
+                        try:
+                            handle.seek(slot)
+                            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                            self.slot = slot
+                            break
+                        except OSError:
+                            continue
+                    else:
+                        if time.monotonic() >= deadline:
+                            handle.close()
+                            raise ContractError(
+                                "too many concurrent Fool's Gold sessions"
+                            )
+                        time.sleep(0.05)
+                        continue
+            else:
+                import fcntl
+
+                mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                try:
+                    fcntl.flock(handle.fileno(), mode | fcntl.LOCK_NB)
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        handle.close()
+                        raise ContractError(
+                            "another Fool's Gold session is using the database"
+                        )
+                    time.sleep(0.05)
+                    continue
+            self.handle = handle
+            return
+
+    def release(self):
+        if self.handle is None:
+            return
+        handle = self.handle
+        self.handle = None
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                slots = (
+                    range(SESSION_SLOTS) if self.slot == "all" else [self.slot]
+                )
+                for slot in slots:
+                    handle.seek(slot)
+                    try:
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    except OSError:
+                        pass
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 WINDOWS_EVENT_OUTCOMES = {4663: "success", 4656: "failure"}
@@ -506,27 +630,64 @@ class Engine:
         if mac_key is not None and (not isinstance(mac_key, bytes) or len(mac_key) != 32):
             raise ContractError("evidence key must be exactly 32 bytes")
         self.mac_key = mac_key
-        if single_writer is None:
-            single_writer = str(database) != ":memory:"
-        self._lock_handle = (
-            acquire_database_lock(database) if single_writer else None
+        self._db_path = (
+            None if str(database) == ":memory:" else Path(database)
         )
-        # The dashboard shares one connection across request threads under a
-        # lock; every other caller keeps sqlite3's same-thread guarantee.
-        self.db = sqlite3.connect(str(database), check_same_thread=not thread_safe)
+        # Writers take a short-lived lock per transaction; the session lock is
+        # a lifetime marker that lets restore prove nobody has the DB open.
+        self._thread_lock = threading.RLock()
+        self._session_lock = None
+        if self._db_path is not None and single_writer is not False:
+            session = SessionLock(self._db_path)
+            session.acquire()
+            self._session_lock = session
+        # Concurrent first starts must not race schema checks and ALTERs.
+        init_lock = None
+        if self._db_path is not None:
+            init_lock = acquire_database_lock(self._db_path, timeout=60.0)
         try:
+            # The dashboard shares one connection across request threads under
+            # a lock; other callers keep sqlite3's same-thread guarantee.
+            self.db = sqlite3.connect(
+                str(database), check_same_thread=not thread_safe
+            )
             self._initialize()
         except BaseException:
             self.db.close()
-            if self._lock_handle is not None:
-                release_database_lock(self._lock_handle)
-                self._lock_handle = None
+            if self._session_lock is not None:
+                self._session_lock.release()
+                self._session_lock = None
             raise
+        finally:
+            if init_lock is not None:
+                release_database_lock(init_lock)
+
+    @contextlib.contextmanager
+    def _write_guard(self, timeout: float = 60.0):
+        """Serialize one write transaction across threads and processes."""
+        with self._thread_lock:
+            handle = None
+            if self._db_path is not None:
+                handle = acquire_database_lock(self._db_path, timeout=timeout)
+            try:
+                with self.db:
+                    yield
+            finally:
+                if handle is not None:
+                    release_database_lock(handle)
+
+    def _alter_add(self, statement):
+        # Idempotent if another process won a migration race.
+        try:
+            self.db.execute(statement)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
 
     def _initialize(self):
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA busy_timeout=5000")
+        self.db.execute("PRAGMA busy_timeout=10000")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS decisions (
@@ -578,7 +739,7 @@ class Engine:
             row[1] for row in self.db.execute("PRAGMA table_info(assurance_runs)")
         }
         if "run_id" not in assurance_columns:
-            self.db.execute("ALTER TABLE assurance_runs ADD COLUMN run_id TEXT")
+            self._alter_add("ALTER TABLE assurance_runs ADD COLUMN run_id TEXT")
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(alerts)")}
         migrations = {
             "evidence_mac": "ALTER TABLE alerts ADD COLUMN evidence_mac TEXT",
@@ -587,12 +748,12 @@ class Engine:
         }
         for name, statement in migrations.items():
             if name not in columns:
-                self.db.execute(statement)
+                self._alter_add(statement)
         decision_columns = {
             row[1] for row in self.db.execute("PRAGMA table_info(decisions)")
         }
         if "created_at" not in decision_columns:
-            self.db.execute("ALTER TABLE decisions ADD COLUMN created_at TEXT")
+            self._alter_add("ALTER TABLE decisions ADD COLUMN created_at TEXT")
         self._migrate_outbox()
         # Bounded routine queries: dashboard pages, status and reports.
         self.db.execute(
@@ -665,9 +826,9 @@ class Engine:
         try:
             self.db.close()
         finally:
-            if self._lock_handle is not None:
-                release_database_lock(self._lock_handle)
-                self._lock_handle = None
+            if self._session_lock is not None:
+                self._session_lock.release()
+                self._session_lock = None
 
     def evidence_mac(self, evidence: dict, prev_mac: str | None):
         if self.mac_key is None:
@@ -703,7 +864,7 @@ class Engine:
             "decision": "unmatched",
             "registry_sha256": self.registry.fingerprint,
         }
-        with self.db:
+        with self._write_guard():
             if decoy:
                 expired = now >= instant(decoy["expires_at"]) or event_time >= instant(
                     decoy["expires_at"]
@@ -804,7 +965,7 @@ class Engine:
             raise ContractError("acknowledgment cannot precede receipt")
         if row[1]:
             raise ContractError("alert has already been acknowledged")
-        with self.db:
+        with self._write_guard():
             self.db.execute(
                 "UPDATE alerts SET acknowledged_at=?,acknowledged_by=? WHERE id=?",
                 (stamp(at), actor, alert_id),
@@ -961,7 +1122,7 @@ class Engine:
                 raise ContractError("Wazuh destinations require a path only")
             path = text(path, "destination path", 2048)
         try:
-            with self.db:
+            with self._write_guard():
                 self.db.execute(
                     "INSERT INTO destinations(name,payload_format,host,port,path,created_at) "
                     "VALUES(?,?,?,?,?,?)",
@@ -1005,7 +1166,7 @@ class Engine:
         text(route, "route", 64)
         if self.destination(destination) is None:
             raise ContractError("route destination does not exist")
-        with self.db:
+        with self._write_guard():
             self.db.execute(
                 "INSERT INTO routes(route,destination,updated_at) VALUES(?,?,?) "
                 "ON CONFLICT(route) DO UPDATE SET "
@@ -1043,7 +1204,7 @@ class Engine:
         payload_format = self._destination_format(destination)
         if route is not None:
             text(route, "delivery route", 64)
-        with self.db:
+        with self._write_guard():
             cursor = self.db.execute(
                 "INSERT OR IGNORE INTO outbox(alert_id,destination,payload_format,"
                 "state,attempts,updated_at) "
@@ -1088,7 +1249,7 @@ class Engine:
 
     def outbox_reset_failed(self, destination: str, now: datetime) -> int:
         self._destination_format(destination)
-        with self.db:
+        with self._write_guard():
             cursor = self.db.execute(
                 "UPDATE outbox SET state='pending',updated_at=? "
                 "WHERE destination=? AND state='failed'",
@@ -1119,7 +1280,7 @@ class Engine:
             or not re.fullmatch(r"[0-9a-fA-F]{64}", digest)
         ):
             raise ContractError("trail file digest must be SHA-256 hexadecimal")
-        with self.db:
+        with self._write_guard():
             self.db.execute(
                 "INSERT OR IGNORE INTO trail_files(digest,processed_at) VALUES(?,?)",
                 (digest, stamp(now)),
@@ -1132,7 +1293,7 @@ class Engine:
         if type(failed_scenarios) is not int or failed_scenarios < 0:
             raise ContractError("failed scenario count must be a nonnegative integer")
         run_id = uuid.uuid4().hex
-        with self.db:
+        with self._write_guard():
             self.db.execute(
                 "INSERT INTO assurance_runs(ran_at,mode,ok,failed_scenarios,details,run_id) "
                 "VALUES(?,?,?,?,?,?)",
@@ -1177,7 +1338,7 @@ class Engine:
             raise ContractError("unsupported acceptance stage")
         text(note, "acceptance note", 512)
         text(actor, "acceptance actor", 200)
-        with self.db:
+        with self._write_guard():
             cursor = self.db.execute(
                 "INSERT INTO acceptances(stage,note,actor,recorded_at) VALUES(?,?,?,?)",
                 (stage, note, actor, stamp(now)),
@@ -1212,7 +1373,7 @@ class Engine:
             raise ContractError("retention days must be 1 to 3650")
         cutoff = stamp(now - timedelta(days=older_than_days))
         counts = {}
-        with self.db:
+        with self._write_guard():
             doomed = self.db.execute(
                 "SELECT COUNT(*) FROM alerts WHERE received_at < ?", (cutoff,)
             ).fetchone()[0]
@@ -1276,7 +1437,7 @@ class Engine:
             )
         if path.exists():
             raise ContractError("backup target already exists")
-        with self.db:
+        with self._write_guard():
             self.db.execute("VACUUM INTO ?", (str(path),))
         return str(path)
 
@@ -1389,8 +1550,13 @@ def restore_database(source, destination) -> str:
             "restore requires an existing trusted directory and a nonsymlink leaf"
         )
     _validate_restore_source(src)
-    lock = acquire_database_lock(dst)
+    # Restore requires exclusive access: no other Fool's Gold session and no
+    # in-flight writer may touch the destination while it is replaced.
+    session = SessionLock(dst)
+    session.acquire(exclusive=True, timeout=0)
+    lock = None
     try:
+        lock = acquire_database_lock(dst, timeout=0)
         if dst.exists():
             # Recover any crash-created destination WAL under the writer lock.
             try:
@@ -1432,5 +1598,7 @@ def restore_database(source, destination) -> str:
                 "restore could not replace the destination"
             ) from exc
     finally:
-        release_database_lock(lock)
+        if lock is not None:
+            release_database_lock(lock)
+        session.release()
     return str(dst)

@@ -159,17 +159,24 @@ class RestoreSidecarTests(unittest.TestCase):
             finally:
                 engine.close()
 
-    def test_two_writers_on_one_database_are_refused(self):
+    def test_multiple_sessions_coexist_and_writes_serialize(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "db.sqlite"
             first = Engine(Registry(registry()), path)
+            second = Engine(Registry(registry()), path)
             try:
-                with self.assertRaises(ContractError):
-                    Engine(Registry(registry()), path)
+                first.process(s3(), NOW)
+                second.process(s3("synthetic-shared-002"), NOW)
+                self.assertEqual(first.report()["decisions"]["alert"], 2)
+                self.assertEqual(second.report()["decisions"]["alert"], 2)
             finally:
                 first.close()
-            second = Engine(Registry(registry()), path)
-            second.close()
+                second.close()
+            reopened = Engine(Registry(registry()), path)
+            try:
+                self.assertEqual(reopened.report()["decisions"]["alert"], 2)
+            finally:
+                reopened.close()
 
 
 if __name__ == "__main__":

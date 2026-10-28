@@ -35,6 +35,8 @@
 
 **Recovery:** `restore` rejects a source with uncommitted WAL sidecar data; restore only files written by `backup` (a self-contained `VACUUM INTO` copy). `prune` also removes outbox rows whose alerts were deleted so delivery state cannot silently accumulate.
 
+**Concurrency:** every file-backed process holds a lifetime session marker; writes take a short-lived exclusive writer lock per transaction, so the dashboard, ingestion and delivery can run concurrently while evidence-chain predecessor selection stays serialized. Restore requires an exclusive session lock and fails while any session has the database open.
+
 **Storage/availability:** SQLite decisions grow until an operator archives them. This release has no retention scheduler, database quota, HA, authenticated service API, queue or durable invalid-record ledger. Invalid results are stdout/stderr plus nonzero exit status; capture those explicitly. Existing source evidence must remain available for review. Disk full and SQLite corruption can stop ingestion.
 
 **Concurrency:** use one local ingestion/acknowledgment writer. Multiwriter duplicate races and clock ordering are not a supported deployment mode. Monitor failure exit codes and do not retry blindly into a different database.
