@@ -36,6 +36,7 @@ All notable changes to Fool's Gold are documented here. The project follows the 
 
 ### Hardened
 
+- Deployment templates require customer-managed S3/CloudTrail encryption and external log destinations, enable S3 versioning/access logging and CloudTrail multi-region/log validation, and declare the finite CLI container's health-check behavior. Existing logging resources, IAM policies and KMS policies remain operator-reviewed prerequisites; no infrastructure was applied.
 - Wazuh file delivery now routes open/write/fsync/zero-progress failures through the durable outbox failure path, completes short writes, closes descriptors reliably, and documents at-least-once duplicate ambiguity instead of claiming exactly-once delivery.
 - S3 listings are accepted as documented bucket-level data events (Management retained for older trails), versioned reads carry `context.version_id`, and the Terraform selector now uses a valid bucket-level data-event selector instead of unsupported management-event filtering.
 - Windows collection now aligns with real wevtutil output (empty, concatenated Event roots, wrapped/unwrapped, UTF-16), skips unsupported individual records without aborting a batch, pages oldest-first from a durable cursor with bounded catch-up, and reports log rollover/coverage gaps. State loading validates stored timestamps.

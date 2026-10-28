@@ -18,6 +18,11 @@ Nothing in `deployment/` is applied automatically. The JSON plan has deployment 
 | `cloudtrail-data-selector.synthetic.json` | Replace synthetic ARN; merge with existing selectors without losing management/data coverage |
 | `wazuh-localfile.example.xml` | Confirm path/ACL, agent and manager versions, rotation/retention and agent-to-manager trust |
 | `wazuh-rules.example.xml` | Confirm rule ID is unused; test decoder/rule on the actual manager before applying |
+| `terraform/main.tf` | Supply approved customer-managed KMS keys, protected CloudTrail/access-log buckets, an encrypted/retained CloudWatch Logs group and its least-privilege delivery role; review multi-region coverage and cost |
+
+The Terraform skeleton enables versioning and customer-managed encryption for the decoy bucket, S3 access logging to a separate existing destination, multi-region CloudTrail with log validation and customer-managed encryption, and delivery to an existing CloudWatch Logs group. The operator must provide and verify destination bucket policies, KMS permissions (including CloudTrail service access scoped to the trail), role trust/permissions, encryption and retention on existing log storage, and log-destination region compatibility. None of these external resources or policies are created or verified by the skeleton. Never reuse the decoy bucket as its own access-log destination. Terraform has not been applied to AWS.
+
+The Docker image is a finite CLI job by default (`--help`) and explicitly has no inherited health check. A deployment that overrides the command to run a persistent console must provide a health probe for that deployment.
 
 CloudTrail selector APIs can replace existing selector configuration. Capture the original configuration, prepare a reviewed merged configuration and rollback record, and verify retained coverage. The artifact is a proposed selector, not a command to overwrite a trail. [AWS data-event selector documentation](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/logging-data-events-with-cloudtrail.html).
 

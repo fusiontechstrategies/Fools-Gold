@@ -15,5 +15,8 @@ RUN useradd --system --uid 10001 foolsgold \
 
 USER foolsgold
 WORKDIR /var/lib/fools-gold
+# This image runs finite CLI jobs by default, not a persistent service.
+# A deployment overriding CMD to serve should supply its own health probe.
+HEALTHCHECK NONE
 ENTRYPOINT ["fools-gold"]
 CMD ["--help"]

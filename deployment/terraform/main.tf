@@ -37,6 +37,31 @@ variable "log_bucket_name" {
   description = "Protected CloudTrail log bucket"
 }
 
+variable "decoy_kms_key_arn" {
+  type        = string
+  description = "Approved customer-managed GovCloud KMS key for decoy object encryption"
+}
+
+variable "trail_kms_key_arn" {
+  type        = string
+  description = "Approved customer-managed KMS key whose policy permits this CloudTrail to encrypt logs"
+}
+
+variable "access_log_bucket_name" {
+  type        = string
+  description = "Existing protected S3 access-log destination, with a policy permitting log delivery; must differ from the decoy bucket"
+}
+
+variable "cloudwatch_log_group_arn" {
+  type        = string
+  description = "Existing approved CloudWatch Logs group ARN, without a trailing :*, with operator-managed encryption and retention"
+}
+
+variable "cloudwatch_logs_role_arn" {
+  type        = string
+  description = "Existing least-privilege role CloudTrail can assume to write to the approved CloudWatch Logs group"
+}
+
 locals {
   decoy_arn = "arn:aws-us-gov:s3:::${var.bucket_name}/${var.decoy_key}"
 }
@@ -56,11 +81,25 @@ resource "aws_s3_bucket_public_access_block" "decoy" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_versioning" "decoy" {
+  bucket = aws_s3_bucket.decoy.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_logging" "decoy" {
+  bucket        = aws_s3_bucket.decoy.id
+  target_bucket = var.access_log_bucket_name
+  target_prefix = "fools-gold/${var.bucket_name}/"
+}
+
 resource "aws_s3_bucket_server_side_encryption_configuration" "decoy" {
   bucket = aws_s3_bucket.decoy.id
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = var.decoy_kms_key_arn
     }
   }
 }
@@ -68,7 +107,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "decoy" {
 resource "aws_s3_object" "decoy" {
   bucket  = aws_s3_bucket.decoy.id
   key     = var.decoy_key
-  content = "SYNTHETIC DECOY - NOT REAL CREDENTIALS\n"
+  content = format("%s\n", "SYNTHETIC DECOY - NOT REAL CREDENTIALS")
+  server_side_encryption = "aws:kms"
+  kms_key_id             = var.decoy_kms_key_arn
+  depends_on            = [aws_s3_bucket_versioning.decoy]
   tags = {
     purpose = "fools-gold-decoy"
   }
@@ -78,7 +120,11 @@ resource "aws_cloudtrail" "decoy" {
   name                          = var.trail_name
   s3_bucket_name                = var.log_bucket_name
   include_global_service_events = false
-  is_multi_region_trail         = false
+  is_multi_region_trail         = true
+  enable_log_file_validation    = true
+  kms_key_id                    = var.trail_kms_key_arn
+  cloud_watch_logs_group_arn    = "${var.cloudwatch_log_group_arn}:*"
+  cloud_watch_logs_role_arn     = var.cloudwatch_logs_role_arn
 
   advanced_event_selector {
     name = "Fools Gold decoy object events"
