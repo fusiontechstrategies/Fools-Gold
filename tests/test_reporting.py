@@ -150,6 +150,80 @@ class BundleTests(unittest.TestCase):
         self.assertTrue(outcome["files_ok"])
         self.assertEqual(outcome["signature"], "invalid")
 
+    def test_signed_bundle_without_signature_fails_when_key_supplied(self):
+        import hashlib
+
+        self.engine.process(s3(), NOW)
+        target = self.folder / "case.zip"
+        build_bundle(self.engine, target, now=NOW)
+        with zipfile.ZipFile(target) as source:
+            entries = {
+                name: source.read(name)
+                for name in source.namelist()
+                if name != "manifest.sig"
+            }
+        manifest = json.loads(entries["manifest.json"])
+        tampered = entries["alerts.jsonl"].replace(b"synthetic-soc", b"tampered")
+        manifest["file_sha256"]["alerts.jsonl"] = hashlib.sha256(
+            tampered
+        ).hexdigest()
+        entries["alerts.jsonl"] = tampered
+        entries["manifest.json"] = json.dumps(
+            manifest, sort_keys=True, separators=(",", ":")
+        ).encode()
+        downgraded = self.folder / "downgraded.zip"
+        with zipfile.ZipFile(downgraded, "x") as destination:
+            for name, data in entries.items():
+                destination.writestr(name, data)
+        outcome = verify_bundle(downgraded, self.key)
+        self.assertFalse(outcome["ok"])
+        self.assertEqual(outcome["signature"], "missing")
+        self.assertFalse(outcome["authenticated"])
+
+    def test_manifest_only_archive_is_not_a_complete_bundle(self):
+        target = self.folder / "manifest-only.zip"
+        with zipfile.ZipFile(target, "x") as archive:
+            archive.writestr("manifest.json", b"{}")
+        with self.assertRaises(Exception):
+            verify_bundle(target, self.key)
+
+    def test_alert_count_must_match_the_payload(self):
+        self.engine.process(s3(), NOW)
+        target = self.folder / "case.zip"
+        build_bundle(self.engine, target, now=NOW)
+        with zipfile.ZipFile(target) as source:
+            entries = {name: source.read(name) for name in source.namelist()}
+        manifest = json.loads(entries["manifest.json"])
+        manifest["alerts"] = manifest["alerts"] + 1
+        entries["manifest.json"] = json.dumps(
+            manifest, sort_keys=True, separators=(",", ":")
+        ).encode()
+        forged = self.folder / "count.zip"
+        with zipfile.ZipFile(forged, "x") as destination:
+            for name, data in entries.items():
+                destination.writestr(name, data)
+        with self.assertRaises(Exception):
+            verify_bundle(forged)
+
+    def test_recorded_source_integrity_failure_is_not_hidden(self):
+        self.engine.process(s3(), NOW)
+        target = self.folder / "case.zip"
+        build_bundle(self.engine, target, now=NOW)
+        with zipfile.ZipFile(target) as source:
+            entries = {name: source.read(name) for name in source.namelist()}
+        manifest = json.loads(entries["manifest.json"])
+        manifest["integrity_ok"] = False
+        entries["manifest.json"] = json.dumps(
+            manifest, sort_keys=True, separators=(",", ":")
+        ).encode()
+        forged = self.folder / "integrity.zip"
+        with zipfile.ZipFile(forged, "x") as destination:
+            for name, data in entries.items():
+                destination.writestr(name, data)
+        outcome = verify_bundle(forged)
+        self.assertFalse(outcome["ok"])
+        self.assertFalse(outcome["source_integrity_ok"])
+
     def test_unexpected_entries_and_existing_target_rejected(self):
         self.engine.process(s3(), NOW)
         target = self.folder / "case.zip"
@@ -238,8 +312,9 @@ class ReportingCliTests(unittest.TestCase):
         ) as destination:
             for name in source.namelist():
                 data = source.read(name)
-                if name == "report.json":
-                    data = b'{"tampered":true}'
+                if name == "alerts.jsonl":
+                    # Parseable tamper: the manifest hash must catch it.
+                    data = data.replace(b"synthetic-soc", b"tampered-soc")
                 destination.writestr(name, data)
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):

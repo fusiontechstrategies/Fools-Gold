@@ -12,7 +12,8 @@ from .core import ContractError, canonical, instant, parse_json, stamp
 
 MAX_ENTRY_BYTES = 32 * 1024 * 1024
 MAX_BUNDLE_BYTES = 128 * 1024 * 1024
-BUNDLE_FILES = {"alerts.jsonl", "report.json", "manifest.json", "manifest.sig"}
+BUNDLE_PAYLOADS = {"alerts.jsonl", "report.json"}
+BUNDLE_FILES = BUNDLE_PAYLOADS | {"manifest.json", "manifest.sig"}
 MAX_GAP_SECONDS = 86400
 
 
@@ -123,8 +124,12 @@ def verify_bundle(path, mac_key: bytes | None = None) -> dict:
             names = set(entries)
             if len(entries) != len(names):
                 raise ContractError("bundle contains duplicate entries")
-            if not names or not names <= BUNDLE_FILES or "manifest.json" not in names:
+            if not names <= BUNDLE_FILES:
                 raise ContractError("bundle contains unexpected entries")
+            if not BUNDLE_PAYLOADS <= names:
+                raise ContractError(
+                    "bundle requires alerts.jsonl and report.json entries"
+                )
             data = {}
             total = 0
             for name in names:
@@ -155,9 +160,9 @@ def verify_bundle(path, mac_key: bytes | None = None) -> dict:
         raise ContractError("bundle manifest has an invalid integrity flag")
     if type(manifest["alerts"]) is not int or manifest["alerts"] < 0:
         raise ContractError("bundle manifest has an invalid alert count")
+    instant(manifest["created_at"])
     hashes = manifest["file_sha256"]
-    expected_entries = set(data) - {"manifest.json", "manifest.sig"}
-    if not isinstance(hashes, dict) or set(hashes) != expected_entries:
+    if not isinstance(hashes, dict) or set(hashes) != BUNDLE_PAYLOADS:
         raise ContractError("bundle manifest does not cover the entry set")
     failures = []
     for name, expected in hashes.items():
@@ -167,6 +172,25 @@ def verify_bundle(path, mac_key: bytes | None = None) -> dict:
             raise ContractError("bundle manifest contains an invalid digest")
         if hashlib.sha256(data[name]).hexdigest() != expected:
             failures.append(name)
+    try:
+        alert_lines = [
+            line for line in data["alerts.jsonl"].splitlines() if line.strip()
+        ]
+        alerts = [parse_json(line) for line in alert_lines]
+    except (ContractError, UnicodeError) as exc:
+        raise ContractError("bundle alerts are not valid JSONL") from exc
+    if any(not isinstance(alert, dict) for alert in alerts):
+        raise ContractError("bundle alerts must be JSON objects")
+    if manifest["alerts"] != len(alerts):
+        raise ContractError("manifest alert count does not match the payload")
+    report = parse_json(data["report.json"])
+    if not isinstance(report, dict) or set(report) != {
+        "schema_version",
+        "report",
+        "outbox",
+        "integrity",
+    }:
+        raise ContractError("bundle report has an unexpected shape")
     signature = None
     if "manifest.sig" in data:
         if mac_key is None:
@@ -184,13 +208,27 @@ def verify_bundle(path, mac_key: bytes | None = None) -> dict:
                 if hmac.compare_digest(expected, provided)
                 else "invalid"
             )
+    elif mac_key is not None:
+        # A keyed verification must not accept a bundle whose signature was
+        # stripped; otherwise an attacker can downgrade to an unsigned bundle.
+        signature = "missing"
+    authenticated = signature == "verified"
+    source_integrity_ok = manifest["integrity_ok"]
+    archive_ok = not failures
     return {
         "schema_version": 1,
         "alerts": manifest["alerts"],
         "created_at": manifest["created_at"],
-        "integrity_ok": manifest["integrity_ok"],
-        "files_ok": not failures,
+        "integrity_ok": source_integrity_ok,
+        "source_integrity_ok": source_integrity_ok,
+        "files_ok": archive_ok,
+        "archive_ok": archive_ok,
         "failures": failures,
         "signature": signature,
-        "ok": not failures and signature != "invalid",
+        "authenticated": authenticated,
+        "ok": (
+            archive_ok
+            and signature not in ("missing", "invalid")
+            and source_integrity_ok is not False
+        ),
     }
