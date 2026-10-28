@@ -23,6 +23,7 @@ All notable changes to Fool's Gold are documented here. The project follows the 
 
 ### Stabilized
 
+- Release acceptance: collector pages are durably spooled before cursor advancement, including partial-run failure recovery; signed checkpoints preserve key protection after complete retention; evidence bundles capture one consistent database snapshot during concurrent ingestion or pruning.
 - Outbox migration is one committed transaction, recovers interrupted artifacts, and tolerates concurrent first starts.
 - Locking is per-transaction (`BEGIN IMMEDIATE` + writer lock) with lifetime session markers, so the dashboard, ingestion, delivery and live assurance coexist; restore remains exclusive.
 - Signed chains reject keyless or wrongly keyed ingestion and destructive retention before changing anything; keyless inspection and acknowledgment still work.

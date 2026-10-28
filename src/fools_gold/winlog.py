@@ -10,6 +10,7 @@ on log rollover/clear, and never changes audit policy.
 
 import os
 import subprocess
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -31,6 +32,35 @@ MAX_BATCH_EVENTS = 128
 MAX_QUERY_TIMEOUT_SECONDS = 30
 MAX_STATE_BYTES = 4096
 QUERY = "*[System[(EventID=4663 or EventID=4656)]]"
+
+
+def spool_page(directory, events) -> Path | None:
+    """Publish a durable, complete page before its cursor can be committed.
+
+    A crash after publication but before cursor commit can replay a page, which
+    ingestion deduplicates. It cannot skip a page whose output was discarded.
+    """
+    folder = Path(directory)
+    if folder.is_symlink() or not folder.is_dir():
+        raise ContractError("collector spool requires an existing trusted directory")
+    if not events:
+        return None
+    descriptor, name = tempfile.mkstemp(
+        prefix="events-", suffix=".jsonl.tmp", dir=folder
+    )
+    temporary = Path(name)
+    target = temporary.with_suffix("")
+    try:
+        with os.fdopen(descriptor, "wb") as writer:
+            for event in events:
+                writer.write((canonical(event) + "\n").encode("utf-8"))
+            writer.flush()
+            os.fsync(writer.fileno())
+        os.replace(temporary, target)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise ContractError("collector could not persist its spool page") from exc
+    return target
 
 
 def decode_query_output(raw: bytes) -> bytes:

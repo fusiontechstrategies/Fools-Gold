@@ -631,6 +631,7 @@ class Engine:
             raise ContractError("evidence key must be exactly 32 bytes")
         self.mac_key = mac_key
         self._chain_verified = False
+        self._chain_verified_version = None
         self._db_path = (
             None if str(database) == ":memory:" else Path(database)
         )
@@ -662,6 +663,24 @@ class Engine:
         finally:
             if init_lock is not None:
                 release_database_lock(init_lock)
+
+    @contextlib.contextmanager
+    def read_snapshot(self):
+        """Keep related evidence reads on one SQLite snapshot.
+
+        A WAL reader does not block other processes from ingesting. The thread
+        lock prevents this connection's own writer from ending the snapshot.
+        Nested callers retain ownership of their existing transaction.
+        """
+        with self._thread_lock:
+            owned = not self.db.in_transaction
+            if owned:
+                self.db.execute("BEGIN")
+            try:
+                yield
+            finally:
+                if owned:
+                    self.db.rollback()
 
     @contextlib.contextmanager
     def _write_guard(self, timeout: float = 60.0):
@@ -854,13 +873,24 @@ class Engine:
 
     def _ensure_chain_key(self):
         """Refuse chain writes that could mix unsigned evidence into a chain."""
-        if self._signed_alert_count() == 0:
+        # A signed checkpoint survives complete retention and preserves the
+        # key requirement even when no signed alerts remain.
+        has_checkpoints = self.db.execute(
+            "SELECT EXISTS(SELECT 1 FROM checkpoints)"
+        ).fetchone()[0]
+        has_signed_alerts = self.db.execute(
+            "SELECT EXISTS(SELECT 1 FROM alerts WHERE evidence_mac IS NOT NULL)"
+        ).fetchone()[0]
+        if not has_signed_alerts and not has_checkpoints:
             return
         if self.mac_key is None:
             raise ContractError(
                 "database contains signed evidence; supply the evidence key"
             )
-        if self._chain_verified:
+        # Recheck after another connection commits, without rescanning the
+        # whole chain for each event written by this connection.
+        version = self.db.execute("PRAGMA data_version").fetchone()[0]
+        if self._chain_verified and self._chain_verified_version == version:
             return
         outcome = self.verify_integrity()
         if not outcome["ok"]:
@@ -868,6 +898,7 @@ class Engine:
                 "evidence key does not match the existing evidence chain"
             )
         self._chain_verified = True
+        self._chain_verified_version = version
 
     def process(self, raw: dict, received_at: datetime) -> dict:
         now = instant(stamp(received_at))
@@ -1069,6 +1100,7 @@ class Engine:
             "boundary_prev_mac,first_retained_id,mac FROM checkpoints ORDER BY id"
         ).fetchall()
         boundaries = {}
+        failures = []
         for (
             checkpoint_id,
             created_at,
@@ -1088,10 +1120,20 @@ class Engine:
             expected = hmac.new(
                 self.mac_key, canonical(fields).encode(), hashlib.sha256
             ).hexdigest()
-            boundaries[boundary_prev_mac] = hmac.compare_digest(
-                expected, checkpoint_mac
+            valid = (
+                isinstance(checkpoint_mac, str)
+                and re.fullmatch(r"[0-9a-f]{64}", checkpoint_mac) is not None
+                and hmac.compare_digest(expected, checkpoint_mac)
             )
-        failures = []
+            boundaries[boundary_prev_mac] = valid
+            if not valid:
+                failures.append(
+                    {
+                        "alert_id": first_retained_id,
+                        "checkpoint_id": checkpoint_id,
+                        "reason": "retention checkpoint mac mismatch",
+                    }
+                )
         expected_prev = None
         applied = 0
         for index, (alert_id, evidence, prev_mac, mac) in enumerate(rows):

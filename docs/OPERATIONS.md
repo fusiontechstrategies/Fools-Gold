@@ -32,10 +32,13 @@ Decoy content is watermarked synthetic data; never place working credentials.
 ## 4. Configure collection
 
 - Windows: enable file auditing and a SACL on the decoy path, then register the
-  scheduled workflow (`deployment/windows/register-collector.ps1`), which
-  collects into a durable spool, ingests with checked exit codes, archives
-  successful spools and retries failures after a restart. It does not create
+  workflow worker (`deployment/windows/register-collector.ps1`) under a reviewed
+  Task Scheduler configuration. The worker does not register a task itself.
+  It uses `collect-windows --spool-directory` to publish each complete page
+  before its cursor advances, ingests with checked exit codes, archives
+  successful pages and retries failures after a restart. It does not create
   the state file (the collector writes it) and never changes audit policy.
+  Set the worker's evidence key file when using a signed database.
 - CloudTrail: stage log files into a protected inbox directory (for example a
   credential-scoped sync job) and schedule
   `python -m fools_gold ... trail-inbox <inbox>` (see
@@ -123,7 +126,8 @@ signed checkpoints so pruning does not break chain verification.
   and coverage gaps (log clear/rollover). On gap, investigate and let it resume.
 - Delivery: inspect `report`/dashboard outbox counts; failed packets require
   `deliver --retry-failed`. Check the sink for duplicates after a crash.
-- Database: one writer at a time; a second writer fails fast with a clear
-  message. Use `backup` rather than copying a live SQLite file.
+- Database: writes serialize per transaction; the dashboard and collectors
+  can coexist. Stop all database sessions before restoring. Use `backup`
+  rather than copying a live SQLite file.
 - Evidence: keep the HMAC key outside the host and anchor chain heads
   externally if deletion-resistant proof is required.

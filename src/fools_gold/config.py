@@ -16,6 +16,7 @@ PATH_KEYS = (
     "evidence_key_file",
     "wazuh_output",
     "state_file",
+    "spool_directory",
     "inbox",
 )
 STRING_KEYS = PATH_KEYS + ("splunk_host", "route", "destination")

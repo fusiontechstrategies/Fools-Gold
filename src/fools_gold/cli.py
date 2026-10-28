@@ -90,13 +90,18 @@ def run_windows_collector(
     interval_seconds,
     max_events,
     state_file=None,
+    spool_directory=None,
     pages_per_cycle=10,
     fetch=None,
 ):
-    from .winlog import collect, load_state, save_state
+    from .winlog import collect, load_state, save_state, spool_page
 
     if type(pages_per_cycle) is not int or not 1 <= pages_per_cycle <= 50:
         raise ContractError("--pages-per-cycle must be 1 to 50")
+    if spool_directory is not None:
+        folder = Path(spool_directory)
+        if folder.is_symlink() or not folder.is_dir():
+            raise ContractError("collector spool requires an existing trusted directory")
     state = load_state(state_file) if state_file else {}
     if state_file and state.get("log_epoch") not in (None, log_epoch):
         print(
@@ -123,8 +128,12 @@ def run_windows_collector(
                     max_events=max_events,
                     since_record_id=since,
                 )
-                for event in events:
-                    print(canonical(event))
+                if spool_directory is not None:
+                    # Publish and fsync the whole page before saving progress.
+                    spool_page(spool_directory, events)
+                else:
+                    for event in events:
+                        print(canonical(event), flush=True)
                 if report["skipped"]:
                     print(
                         "Fool's Gold collector: skipped "
@@ -270,6 +279,10 @@ def main(argv=None):
     collector.add_argument(
         "--state-file",
         help="Durable EventRecordID cursor file for restart recovery",
+    )
+    collector.add_argument(
+        "--spool-directory",
+        help="Persist complete JSONL pages before advancing the cursor; no event stdout",
     )
     collector.add_argument(
         "--pages-per-cycle", type=int, default=10, help="Bounded catch-up pages"
@@ -447,6 +460,7 @@ def main(argv=None):
                 interval_seconds=args.interval_seconds,
                 max_events=args.max_events,
                 state_file=args.state_file,
+                spool_directory=args.spool_directory,
                 pages_per_cycle=args.pages_per_cycle,
             )
         if args.command == "restore":

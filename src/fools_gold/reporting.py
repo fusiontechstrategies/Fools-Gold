@@ -93,6 +93,17 @@ def build_bundle(engine, target, now: datetime | None = None) -> str:
         )
     if path.exists():
         raise ContractError("bundle target already exists")
+    with engine.read_snapshot():
+        files = _capture_bundle(engine, now)
+    # Filesystem work happens after the read snapshot has been released.
+    with zipfile.ZipFile(path, "x") as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return str(path)
+
+
+def _capture_bundle(engine, now):
+    """Capture all bundle components from the caller's read snapshot."""
     alerts = list(engine.export_alerts())
     integrity = engine.verify_integrity() if engine.mac_key is not None else None
     checkpoints = [
@@ -195,10 +206,7 @@ def build_bundle(engine, target, now: datetime | None = None) -> str:
             engine.mac_key, manifest_bytes, hashlib.sha256
         ).hexdigest().encode()
     files["manifest.json"] = manifest_bytes
-    with zipfile.ZipFile(path, "x") as archive:
-        for name, data in files.items():
-            archive.writestr(name, data)
-    return str(path)
+    return files
 
 
 def verify_bundle(path, mac_key: bytes | None = None) -> dict:

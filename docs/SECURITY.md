@@ -33,6 +33,10 @@
 
 **Bundles:** `bundle` hashes every entry and signs the manifest with HMAC-SHA256 when an evidence key is configured; `verify-bundle` reports `signature: unverified` when no key is supplied. Holding the key allows re-signing, so keep it outside the monitored host.
 
+Bundle capture uses one SQLite read snapshot for alerts, integrity, acknowledgments, delivery, assurance and acceptance history. Concurrent ingestion or retention cannot mix states from different moments into the same archive. Filesystem archive writing happens after the read snapshot is released.
+
+Signed retention checkpoints preserve the evidence-key requirement even after every signed alert has expired. Keyless or wrongly keyed chain writes remain refused, and verification checks every checkpoint signature, including checkpoints that do not currently explain a retained boundary.
+
 **Recovery:** `restore` rejects a source with uncommitted WAL sidecar data; restore only files written by `backup` (a self-contained `VACUUM INTO` copy). `prune` also removes outbox rows whose alerts were deleted so delivery state cannot silently accumulate.
 
 **Concurrency:** every file-backed process holds a lifetime session marker; writes take a short-lived exclusive writer lock per transaction, so the dashboard, ingestion and delivery can run concurrently while evidence-chain predecessor selection stays serialized. Restore requires an exclusive session lock and fails while any session has the database open.
