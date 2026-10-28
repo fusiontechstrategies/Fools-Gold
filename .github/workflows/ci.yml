@@ -72,6 +72,7 @@ jobs:
           "$PY" -c "import shutil; assert shutil.which('fools-gold'), 'entry point not on PATH'"
           "$PY" -c "from importlib.metadata import version; assert version('fools-gold') == '0.3.0'"
           cd "$RUNNER_TEMP"
+          "$PY" -c "from fools_gold.ui_assets import MASCOT_BYTES; assert MASCOT_BYTES.startswith(bytes.fromhex('89504e47'))"
           "$PY" -m fools_gold check > /dev/null
           "$PY" -m fools_gold demo --out "$RUNNER_TEMP/demo-wheel" > /dev/null
           test -f "$RUNNER_TEMP/demo-wheel/report.html"
@@ -94,6 +95,7 @@ jobs:
           "$PY" -c "import shutil; assert shutil.which('fools-gold'), 'entry point not on PATH'"
           "$PY" -c "from importlib.metadata import version; assert version('fools-gold') == '0.3.0'"
           cd "$RUNNER_TEMP"
+          "$PY" -c "from fools_gold.ui_assets import MASCOT_BYTES; assert MASCOT_BYTES.startswith(bytes.fromhex('89504e47'))"
           "$PY" -m fools_gold check > /dev/null
           "$PY" -m fools_gold demo --out "$RUNNER_TEMP/demo-sdist" > /dev/null
           test -f "$RUNNER_TEMP/demo-sdist/report.html"

@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from .assurance import assurance_report
 from .core import ContractError, canonical, instant
 from .reporting import incidents
-from .ui_assets import MARK, STYLES
+from .ui_assets import MARK, MASCOT_BYTES, MASCOT_ETAG, MASCOT_PATH, STYLES
 
 MAX_BODY_BYTES = 4096
 SESSION_TTL_SECONDS = 8 * 3600
@@ -33,7 +33,7 @@ SOURCES = ("aws.cloudtrail.s3", "windows.security", "linux.audit")
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
-        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+        "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; "
         "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
     ),
     "Referrer-Policy": "no-referrer",
@@ -177,7 +177,8 @@ def _summary_title(alert) -> str:
     noun = RESOURCE_NOUNS.get(event.get("source"), "Decoy")
     actions = event.get("actions") or []
     words = [ACTION_WORDS.get(action, action) for action in actions]
-    return f"{noun} {', '.join(words) if words else 'access'}"
+    title = f"{noun} {', '.join(words) if words else 'access'}"
+    return title + (" denied" if event.get("outcome") == "denied" else "")
 
 
 def _badge(label, tone="neutral", dot=False) -> str:
@@ -234,6 +235,7 @@ def _shell(title, active, body, *, purpose="", meta="") -> str:
     return (
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<link rel='icon' type='image/png' href='{MASCOT_PATH}'>"
         f"<title>{_e(title)} · Fool's Gold</title>"
         f"<style>{STYLES}</style></head><body>"
         "<a class='skip-link' href='#main'>Skip to content</a>"
@@ -264,6 +266,7 @@ def _login_page(error="") -> str:
     return (
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<link rel='icon' type='image/png' href='{MASCOT_PATH}'>"
         "<title>Fool's Gold login</title>"
         f"<style>{STYLES}</style></head><body>"
         "<div class='login-shell'><main class='login-card'>"
@@ -406,6 +409,14 @@ def _overview(engine, *, csrf):
             "failed; synthetic success does not prove live collection.</div>"
             "</div><a class='btn btn-small' href='/assurance'>Open assurance</a></div>"
         )
+    elif last["mode"] == "canary":
+        attention.append(
+            "<div class='status-row'><div><strong>Latest assurance was synthetic"
+            "</strong><div class='detail'>The canary passed the local decision "
+            "path. Review live collection and external acceptance separately."
+            "</div></div><a class='btn btn-small btn-secondary' "
+            "href='/assurance'>Review stages</a></div>"
+        )
     if integrity is not None and not integrity["ok"]:
         attention.append(
             "<div class='status-row'><div><strong>Evidence chain failing</strong>"
@@ -509,7 +520,7 @@ def _overview(engine, *, csrf):
         ]
     )
     body = (
-        f"<div class='cards'>{cards}</div>"
+        f"<div class='cards metrics'>{cards}</div>"
         "<section class='section' aria-labelledby='attention'>"
         "<div class='section-head'><h2 id='attention'>Needs attention</h2>"
         "<p>Ordered by operational urgency, all scoped to this database.</p></div>"
@@ -710,7 +721,7 @@ def _alerts_page(engine, params, *, csrf):
         f"{filters}"
         "<section class='section' aria-labelledby='queue'>"
         "<div class='section-head'><h2 id='queue'>Triage queue</h2>"
-        "<p>Every row is a real decoy interaction. Investigate to acknowledge."
+        "<p>Every row is a retained decoy interaction. Investigate to acknowledge."
         "</p></div>"
         f"{queue}{pager}</section>"
     )
@@ -930,7 +941,7 @@ def _incidents_page(engine, *, csrf):
     if rows:
         body_rows = "".join(
             "<tr>"
-            f"<td><a href='{_e('/alerts?q=' + urlencode({'q': item['actor']}))}'>"
+            f"<td><a href='{_e('/alerts?' + urlencode({'q': item['actor']}))}'>"
             f"{_e(_actor_label(item['actor']))}</a></td>"
             f"<td><time datetime='{_e(item['first_seen'])}'>"
             f"{_e(_human_time(item['first_seen']))}</time><br>"
@@ -1049,8 +1060,8 @@ def _assurance_page(engine, *, csrf):
         if values.get("samples"):
             metrics_rows += (
                 "<div class='stat-line'>"
-                f"<span>{_e(label)}</span><span class='mono'>p50 {_e(values['p50'])}s · "
-                f"p95 {_e(values['p95'])}s · max {_e(values['max'])}s "
+                f"<span>{_e(label)}</span><span class='mono'>p50 {values['p50']:.1f}s · "
+                f"p95 {values['p95']:.1f}s · max {values['max']:.1f}s "
                 f"({_e(values['samples'])} samples)</span></div>"
             )
         else:
@@ -1331,12 +1342,13 @@ def make_server(engine, token: str, port: int = 0) -> HTTPServer:
                 pass
 
         def _send(self, status, body: bytes, content_type: str, headers=None):
+            extra = {**SECURITY_HEADERS, **(headers or {})}
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Cache-Control", "no-store")
-            for name, value in {**SECURITY_HEADERS, **(headers or {})}.items():
+            self.send_header("Cache-Control", extra.pop("Cache-Control", "no-store"))
+            for name, value in extra.items():
                 self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
@@ -1384,6 +1396,13 @@ def make_server(engine, token: str, port: int = 0) -> HTTPServer:
         def do_GET(self):
             parsed = urlparse(self.path)
             path, query = parsed.path, parse_qs(parsed.query)
+            if path == MASCOT_PATH:
+                # One fixed public package asset; never a filesystem path
+                # derived from a request. Its fingerprint permits safe caching.
+                headers = {"Cache-Control": "public, max-age=31536000, immutable", "ETag": MASCOT_ETAG}
+                if self.headers.get("If-None-Match") == MASCOT_ETAG:
+                    return self._send(304, b"", "image/png", headers)
+                return self._send(200, MASCOT_BYTES, "image/png", headers)
             if path == "/healthz":
                 return self._json(200, {"ok": True})
             if path == "/login":

@@ -1,5 +1,7 @@
 # Fool's Gold
 
+<img src="src/fools_gold/assets/prospector.png" alt="Fool's Gold prospector holding a gold nugget" width="140">
+
 *Looks valuable. Leaves evidence.*
 
 [![CI](https://github.com/fusiontechstrategies/Fools-Gold/actions/workflows/ci.yml/badge.svg)](https://github.com/fusiontechstrategies/Fools-Gold/actions/workflows/ci.yml)
@@ -8,6 +10,26 @@
 Put harmless bait where an intruder might look. Know when someone touches it. Regularly prove that the resulting alert can reach a person.
 
 Fool's Gold is an open-source toolkit from Fusion Technology Strategies for internal cyber decoys and detection assurance in AWS GovCloud and Windows environments. Its starting point is CISA's September 16, 2026 paper, **Using Cyber Decoys to Strengthen Detection and Response**.
+
+![Fool's Gold operations console showing synthetic alerts and evidence health](docs/images/overview.jpg)
+
+*Actual local console, using synthetic Windows, S3 and Linux events. Canary success is shown separately from live collection and external acceptance; these are demonstration results.*
+
+## Investigate, acknowledge, and verify
+
+The operations console gives operators six focused views: overview, triage queue, alert investigation, incident groups, assurance stages, and evidence/delivery health. Filter the queue, follow an actor's activity, inspect the event-to-delivery timeline, and record a local acknowledgment without losing the original evidence.
+
+<details>
+<summary>Explore the console screenshots</summary>
+
+![Filtered Windows triage queue](docs/images/alerts.jpg)
+![Alert investigation with a simulated browser acknowledgment](docs/images/investigation.jpg)
+![Assurance stages distinguish synthetic success from unverified live deployment](docs/images/assurance.jpg)
+![Signed evidence and synthetic local-file delivery status](docs/images/evidence.jpg)
+
+All screenshots use generated fixtures. Local JSONL delivery acceptance does not prove SIEM indexing or a real analyst workflow.
+
+</details>
 
 ## What works today
 
@@ -57,12 +79,26 @@ A wheel and source distribution are built by `python -m build`; CI installs the 
 
 ```powershell
 python -m fools_gold demo --out runtime/demo
+$env:FG_UI_TOKEN = python -c "import secrets; print(secrets.token_urlsafe(32))"
+$env:FG_UI_TOKEN # Copy this local token into the login form.
 python -m fools_gold --registry runtime/demo/registry.json --database runtime/demo/evidence.sqlite serve --port 8080
 ```
 
 `demo` writes a synthetic registry, evidence database and a standalone HTML report. `serve` binds only `127.0.0.1` and requires a 16+ character token from `FG_UI_TOKEN` (or `--token-file`). Browsing to the dashboard redirects to a login form; the token is exchanged for a short-lived HttpOnly, SameSite=Strict session cookie (never placed in a URL or persistent storage) and form actions carry a CSRF token. Scripts can keep using `Authorization: Bearer <token>` against `/api/*`, `/metrics` and `/healthz`.
 
 The dashboard shows summary cards, alert filters (search, source, decoy, route, acknowledgment), stable pagination, alert details with event/receipt/delivery/acknowledgment times, incidents, delivery state and the evidence view. `/api/assurance` and `/api/integrity` report assurance history and chain state.
+
+For the richer screenshot walkthrough, run this from a source checkout. Use a new or empty output directory:
+
+```powershell
+$env:PYTHONPATH = 'src'
+python -m scripts.prepare_showcase --out runtime/showcase
+$env:FG_UI_TOKEN = python -c "import secrets; print(secrets.token_urlsafe(32))"
+$env:FG_UI_TOKEN # Local login only; never put this in a URL or screenshot.
+python -m fools_gold --profile runtime/showcase/profile.json serve --port 8080
+```
+
+Open `http://127.0.0.1:8080`. The walkthrough generates 12 synthetic alerts, four simulated acknowledgments, three local JSONL delivery destinations, a signed evidence bundle, and a backup. It performs no AWS requests, SIEM connection, task registration, or audit-policy changes. Its generated keys and runtime files belong in protected local storage; do not publish them.
 
 For a real registry, `init` writes a validated starter document:
 

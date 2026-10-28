@@ -324,12 +324,13 @@ class ConsoleTests(unittest.TestCase):
     def test_bearer_access_still_works_for_scripts(self):
         request = urllib.request.Request(self.base + "/api/report")
         request.add_header("Authorization", f"Bearer {TOKEN}")
-        with urllib.request.urlopen(request, timeout=10) as response:
+        # URLs come only from this test's loopback fixture and fixed paths.
+        with urllib.request.urlopen(request, timeout=10) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             payload = json.loads(response.read())
         self.assertEqual(payload["decisions"]["alert"], 3)
         request = urllib.request.Request(self.base + "/")
         request.add_header("Authorization", f"Bearer {TOKEN}")
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(request, timeout=10) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             self.assertIn("Operations overview", response.read().decode())
 
     def test_healthz_is_open_and_logout_invalidates(self):

@@ -29,6 +29,9 @@ fools-gold = "fools_gold.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+fools_gold = ["assets/*.png"]
+
 [tool.ruff]
 target-version = "py312"
 

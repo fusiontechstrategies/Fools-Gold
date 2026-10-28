@@ -13,10 +13,11 @@ All notable changes to Fool's Gold are documented here. The project follows the 
 - **Operator UX:** `doctor` checks registry, expiry, integrity, outbox, assurance, inbox and collector readiness; `init` writes a validated starter registry and key; `plant` writes watermarked synthetic decoy files; `demo` builds a self-contained demo database and HTML report; `serve` runs a loopback-only, bearer-token dashboard with `/api/*` endpoints, `/healthz` and Prometheus `/metrics`.
 - **Delivery:** route-filtered enqueueing (`deliver --route`).
 - **Artifacts:** Dockerfile, Compose file, systemd inbox service/timer, Terraform skeleton, and Splunk/Elastic/Sentinel starter content.
-- **Tests:** 202 tests including adversarial, hardening and maintenance coverage.
+- **Tests:** adversarial, hardening, recovery, concurrency and maintenance coverage; see the current verification record for executed results.
 
 ### Enhanced
 
+- A redesigned six-view operations console with a packaged prospector mascot, responsive navigation, triage filters, investigation timelines, explicit assurance stages and evidence/delivery health. Branding is served from a fixed fingerprinted local asset; no CDN or runtime dependency is required. A source-checkout showcase script reproduces the synthetic screenshot data.
 - Structured, redacted error logs (`--log-json`), actionable hints for common failures, routine-query indexes, and CI jobs for linting plus wheel/sdist builds and clean-environment installed-package smoke tests. README now documents the install path, the verified surface and known gaps explicitly.
 - Named destinations (`destination add/list`) and explicit route mappings (`route map/list`); the outbox is keyed per destination so retries, failure resets, status and completion reporting are scoped, with a tested migration from the legacy format-keyed outbox.
 - The dashboard is browser-usable: login form with short-lived HttpOnly session cookies, CSRF-protected acknowledgment, alert filters (search/source/decoy/route/ack), stable pagination, alert detail with event/receipt/delivery/acknowledgment times, incidents view and summary cards, while the bearer API and metrics endpoint remain available.

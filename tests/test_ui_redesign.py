@@ -1,16 +1,19 @@
 """Structural and honesty checks for the redesigned console."""
 
+import html
 import json
+import re
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 from fools_gold.core import Engine, Registry
 from fools_gold.ui import make_server
-from fools_gold.ui_assets import STYLES
+from fools_gold.ui_assets import MASCOT_BYTES, MASCOT_ETAG, MASCOT_PATH, STYLES
 from tests.test_pilot import NOW, registry, s3
 
 TOKEN = "synthetic-redesign-token"
@@ -47,11 +50,12 @@ class RedesignTests(unittest.TestCase):
         request = urllib.request.Request(self.base + path)
         for name, value in self.request_headers.items():
             request.add_header(name, value)
-        with urllib.request.urlopen(request, timeout=10) as response:
+        # Test-owned loopback server and fixed test paths; no external URLs.
+        with urllib.request.urlopen(request, timeout=10) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             return response, response.read().decode()
 
     def login_page(self):
-        with urllib.request.urlopen(self.base + "/login", timeout=10) as response:
+        with urllib.request.urlopen(self.base + "/login", timeout=10) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             return response, response.read().decode()
 
     def test_pages_are_self_contained_and_accessible(self):
@@ -88,6 +92,23 @@ class RedesignTests(unittest.TestCase):
         self.assertNotIn("FG_UI_TOKEN=", body)
         self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
 
+    def test_mascot_is_a_fixed_public_asset_with_safe_cache_headers(self):
+        # Public branding is fetched from the same test-owned loopback server.
+        with urllib.request.urlopen(self.base + MASCOT_PATH, timeout=10) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            self.assertEqual(response.headers["Content-Type"], "image/png")
+            self.assertEqual(response.headers["ETag"], MASCOT_ETAG)
+            self.assertIn("immutable", response.headers["Cache-Control"])
+            self.assertEqual(response.read(), MASCOT_BYTES)
+        request = urllib.request.Request(
+            self.base + MASCOT_PATH, headers={"If-None-Match": MASCOT_ETAG}
+        )
+        with self.assertRaises(urllib.error.HTTPError) as cached:
+            urllib.request.urlopen(request, timeout=10)  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        self.assertEqual(cached.exception.code, 304)
+        with self.assertRaises(urllib.error.HTTPError) as missing:
+            self.get("/assets/not-a-package-asset.png")
+        self.assertEqual(missing.exception.code, 404)
+
     def test_stylesheet_defines_responsive_and_focus_states(self):
         self.assertIn("@media (max-width: 980px)", STYLES)
         self.assertIn("@media (max-width: 640px)", STYLES)
@@ -117,6 +138,16 @@ class RedesignTests(unittest.TestCase):
         self.assertNotIn("Live sensor</strong><div class='detail'>A real decoy "
                          "file was probed and the resulting alert observed.</div>"
                          "</div><div><span class='badge badge-ok'>Passed", body)
+
+    def test_incident_actor_link_opens_matching_alerts(self):
+        _, body = self.get("/incidents")
+        match = re.search(r"href='(/alerts\?[^']+)'", body)
+        self.assertIsNotNone(match)
+        target = html.unescape(match.group(1))
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(target).query)
+        self.assertEqual(query["q"], [s3("redesign-1")["userIdentity"]["arn"]])
+        _, alerts = self.get(target)
+        self.assertIn("1 matching", alerts)
 
     def test_overview_and_evidence_empty_states_are_explicit(self):
         response, body = self.get("/evidence")
@@ -148,19 +179,20 @@ class RedesignTests(unittest.TestCase):
         response = urllib.request.Request(self.base + "/api/report")
         for name, value in self.request_headers.items():
             response.add_header(name, value)
-        with urllib.request.urlopen(response, timeout=10) as answer:
+        # Every request below targets the same test-owned loopback server.
+        with urllib.request.urlopen(response, timeout=10) as answer:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             payload = json.loads(answer.read())
             self.assertEqual(
                 answer.headers["Content-Security-Policy"].split(";")[0],
                 "default-src 'none'",
             )
         self.assertEqual(payload["decisions"]["alert"], 1)
-        with urllib.request.urlopen(self.base + "/healthz", timeout=10) as answer:
+        with urllib.request.urlopen(self.base + "/healthz", timeout=10) as answer:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             self.assertTrue(json.loads(answer.read())["ok"])
         metrics = urllib.request.Request(self.base + "/metrics")
         for name, value in self.request_headers.items():
             metrics.add_header(name, value)
-        with urllib.request.urlopen(metrics, timeout=10) as answer:
+        with urllib.request.urlopen(metrics, timeout=10) as answer:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             self.assertIn("fools_gold_alerts_total 1", answer.read().decode())
 
 

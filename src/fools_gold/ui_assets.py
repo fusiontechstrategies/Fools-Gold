@@ -1,16 +1,21 @@
 """Presentation assets for the local operations console.
 
-Tailored CSS and a small inline mark only: no CDN, hosted fonts, scripts from
-other origins, analytics or build pipeline. Served inline by ui.py.
+Tailored CSS and a bundled prospector mascot: no CDN, hosted fonts, scripts
+from other origins, analytics or build pipeline.
 """
 
+import hashlib
+
+# Python >=3.12 is the package's declared minimum; files() is supported there.
+# nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
+from importlib.resources import files
+
+MASCOT_BYTES = files("fools_gold").joinpath("assets", "prospector.png").read_bytes()
+MASCOT_ETAG = '"' + hashlib.sha256(MASCOT_BYTES).hexdigest() + '"'
+MASCOT_PATH = "/assets/prospector-" + MASCOT_ETAG[1:13] + ".png"
 MARK = (
-    "<svg class='mark' viewBox='0 0 24 24' width='26' height='26' "
-    "aria-hidden='true' focusable='false'>"
-    "<path d='M12 2.6 21 7.9v8.2L12 21.4 3 16.1V7.9Z' fill='none' "
-    "stroke='currentColor' stroke-width='1.5'/>"
-    "<path d='M12 7.1 16.6 9.8v4.4L12 16.9 7.4 14.2V9.8Z' "
-    "fill='currentColor' opacity='.9'/></svg>"
+    f"<img class='mark' src='{MASCOT_PATH}' width='56' height='56' "
+    "alt='' aria-hidden='true'>"
 )
 
 STYLES = """
@@ -87,7 +92,7 @@ small, .small { font-size: 12.5px; }
 }
 .brand { display: flex; align-items: center; gap: 11px; color: #f4e6c6; text-decoration: none; }
 .brand:hover { color: #fff3d8; }
-.brand .mark { color: var(--gold); flex: none; }
+.brand .mark { flex: none; width: 72px; height: 72px; object-fit: contain; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.2; }
 .brand-name { font-weight: 600; letter-spacing: 0.01em; color: #f3f1ec; font-size: 16px; }
 .brand-tag { font-size: 11.5px; color: var(--rail-muted); letter-spacing: 0.04em; }
@@ -125,6 +130,8 @@ small, .small { font-size: 12.5px; }
 
 /* Cards and grids */
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(196px, 1fr)); gap: 14px; }
+.metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.metrics .card { min-width: 0; padding: 16px 14px; }
 .card {
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow);
@@ -295,7 +302,7 @@ details.evidence pre {
 .login-shell { min-height: 100vh; display: grid; place-items: center; padding: 28px; background: var(--paper); }
 .login-card { width: 100%; max-width: 398px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 30px; box-shadow: 0 8px 28px rgba(28,31,36,0.06); }
 .login-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 22px; color: var(--ink); }
-.login-brand .mark { color: var(--gold); }
+.login-brand .mark { width: 82px; height: 82px; object-fit: contain; }
 .login-brand .brand-name { color: var(--ink); }
 .login-brand .brand-tag { color: var(--muted); }
 .login-title { font-size: 20px; }
@@ -322,6 +329,10 @@ details.evidence pre {
 .inline-link { font-size: 12.5px; }
 .mono-id { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 
+@media (max-width: 1280px) {
+  .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
 @media (max-width: 980px) {
   .shell { grid-template-columns: 1fr; }
   .rail { position: static; height: auto; padding: 16px 18px; gap: 14px; }
@@ -337,6 +348,7 @@ details.evidence pre {
 @media (max-width: 640px) {
   h1 { font-size: 21px; }
   .cards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .alert-row { grid-template-columns: 1fr; gap: 10px; }
   .alert-side { justify-content: space-between; }
   .alert-when { text-align: left; }
