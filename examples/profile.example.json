@@ -1,0 +1,11 @@
+{
+  "registry": "registry.json",
+  "database": "../runtime/evidence.sqlite",
+  "evidence_key_file": "../runtime/evidence.key",
+  "inbox": "../runtime/inbox",
+  "state_file": "../runtime/windows-collector-state.json",
+  "wazuh_output": "../runtime/wazuh-feed.jsonl",
+  "splunk_host": "hec.internal.example",
+  "splunk_port": 8088,
+  "route": "soc-primary"
+}

@@ -115,6 +115,7 @@ Decoy expiration does **not** switch off detection. It raises a maintenance flag
 
 ## Read next
 
+- [Operator acceptance walkthrough](docs/OPERATIONS.md) — install → init → plant → collect → ingest → verify → deliver → assure → investigate → acknowledge → export → recover
 - [Architecture and trust boundaries](docs/ARCHITECTURE.md)
 - [Registry, event and alert contracts](docs/CONTRACTS.md)
 - [Pilot deployment and acceptance plan](docs/PILOT.md)

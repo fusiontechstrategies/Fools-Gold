@@ -23,6 +23,7 @@ from .assurance import (
     run_assurance,
     run_check,
 )
+from .config import load_profile
 from .core import (
     ContractError,
     Engine,
@@ -210,6 +211,10 @@ def run_trail_inbox(engine: Engine, directory: str):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Fool's Gold decoy detection pilot")
+    parser.add_argument(
+        "--profile",
+        help="JSON profile with non-secret defaults (CLI arguments win)",
+    )
     parser.add_argument("--registry", help="Protected exact-location registry JSON")
     parser.add_argument(
         "--database", help="Protected local SQLite evidence database"
@@ -328,6 +333,8 @@ def main(argv=None):
     )
     doctor.add_argument("--inbox", help="Trail inbox directory to check")
     doctor.add_argument("--max-assurance-hours", type=int)
+    doctor.add_argument("--assurance-mode", choices=("canary", "live"))
+    doctor.add_argument("--max-collection-hours", type=int)
     init = commands.add_parser(
         "init", help="Write a starter registry (and optional evidence key)"
     )
@@ -367,6 +374,10 @@ def main(argv=None):
         # Protect new POSIX runtime files. Windows deployment requires explicit ACLs.
         if os.name != "nt":
             os.umask(0o077)
+        if args.profile:
+            for name, value in load_profile(args.profile).items():
+                if getattr(args, name, None) is None:
+                    setattr(args, name, value)
         if args.command == "collect-windows":
             if not args.registry:
                 raise ContractError("collect-windows requires --registry")
@@ -478,6 +489,8 @@ def main(argv=None):
                 engine,
                 inbox=args.inbox,
                 max_assurance_hours=args.max_assurance_hours,
+                assurance_mode=args.assurance_mode,
+                max_collection_hours=args.max_collection_hours,
             )
             print(canonical(outcome))
             return 0 if outcome["ok"] else 2

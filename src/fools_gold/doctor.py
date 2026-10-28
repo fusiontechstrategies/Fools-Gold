@@ -8,15 +8,31 @@ from pathlib import Path
 from .core import ContractError, instant
 
 EXPIRY_WARNING_DAYS = 14
+PENDING_WARNING_HOURS = 24
 
 
-def run_doctor(engine, *, inbox=None, max_assurance_hours=None, now=None) -> dict:
+def run_doctor(
+    engine,
+    *,
+    inbox=None,
+    max_assurance_hours=None,
+    assurance_mode=None,
+    max_collection_hours=None,
+    now=None,
+) -> dict:
     now = now or datetime.now(UTC)
     if max_assurance_hours is not None and (
         type(max_assurance_hours) is not int
         or not 0 <= max_assurance_hours <= 24 * 3650
     ):
         raise ContractError("max assurance hours must be a nonnegative integer")
+    if assurance_mode not in (None, "canary", "live"):
+        raise ContractError("assurance mode must be canary or live")
+    if max_collection_hours is not None and (
+        type(max_collection_hours) is not int
+        or not 0 <= max_collection_hours <= 24 * 365
+    ):
+        raise ContractError("max collection hours must be a nonnegative integer")
     checks = []
 
     def record(name, status, detail=""):
@@ -62,26 +78,41 @@ def run_doctor(engine, *, inbox=None, max_assurance_hours=None, now=None) -> dic
         "warn" if failed else "pass",
         f"pending={pending} failed={failed}",
     )
+    oldest = engine.db.execute(
+        "SELECT MIN(updated_at) FROM outbox WHERE state='pending'"
+    ).fetchone()[0]
+    if oldest:
+        age_hours = (now - instant(oldest)).total_seconds() / 3600
+        record(
+            "delivery_backlog_age",
+            "warn" if age_hours > PENDING_WARNING_HOURS else "pass",
+            f"oldest pending {round(age_hours, 2)}h",
+        )
 
     last = engine.last_assurance()
-    if last is None:
-        record(
-            "assurance",
-            "fail" if max_assurance_hours is not None else "warn",
-            "no assurance run recorded",
-        )
-    else:
-        age_hours = (now - instant(last["ran_at"])).total_seconds() / 3600
-        if max_assurance_hours is None:
-            record("assurance", "pass" if last["ok"] else "warn", f"last ok={last['ok']}")
+    history = engine.assurance_history(1000)
+    if assurance_mode is not None:
+        history = [run for run in history if run["mode"] == assurance_mode]
+    last_ok = next((run for run in history if run["ok"]), None)
+    if max_assurance_hours is None:
+        if last is None:
+            record("assurance", "warn", "no assurance run recorded")
         else:
-            status = (
-                "pass" if last["ok"] and age_hours <= max_assurance_hours else "fail"
-            )
             record(
                 "assurance",
-                status,
-                f"last ok={last['ok']} age_hours={round(age_hours, 2)}",
+                "pass" if last["ok"] else "warn",
+                f"last mode={last['mode']} ok={last['ok']}",
+            )
+    else:
+        scope = f"{assurance_mode} " if assurance_mode else ""
+        if last_ok is None:
+            record("assurance", "fail", f"no successful {scope}assurance run")
+        else:
+            age_hours = (now - instant(last_ok["ran_at"])).total_seconds() / 3600
+            record(
+                "assurance",
+                "pass" if age_hours <= max_assurance_hours else "fail",
+                f"last successful {scope}run {round(age_hours, 2)}h ago",
             )
 
     if inbox is not None:
@@ -98,6 +129,27 @@ def run_doctor(engine, *, inbox=None, max_assurance_hours=None, now=None) -> dic
                 )
             ]
             record("trail_inbox", "pass", f"{len(staged)} file(s) staged")
+            if max_collection_hours is not None:
+                if not staged:
+                    record(
+                        "collection_freshness",
+                        "warn",
+                        "no staged files; collection may be stalled",
+                    )
+                else:
+                    newest = max(entry.stat().st_mtime for entry in staged)
+                    age_hours = (
+                        now - datetime.fromtimestamp(newest, UTC)
+                    ).total_seconds() / 3600
+                    record(
+                        "collection_freshness",
+                        (
+                            "pass"
+                            if age_hours <= max_collection_hours
+                            else "warn"
+                        ),
+                        f"newest staged file {round(age_hours, 2)}h old",
+                    )
 
     host = (platform.node() or "").casefold()
     expected = [
@@ -133,9 +185,14 @@ def run_doctor(engine, *, inbox=None, max_assurance_hours=None, now=None) -> dic
     else:
         record(
             "linux_audit_sensor",
-            "warn",
+            "unverified",
             "collector contract only; stage auditd exports for ingest",
         )
+    record(
+        "audit_policy",
+        "unverified",
+        "file SACL/audit policy (and SMB access auditing) require manual verification",
+    )
 
     return {
         "schema_version": 1,
