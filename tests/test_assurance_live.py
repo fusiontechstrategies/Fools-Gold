@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from fools_gold.assurance import run_assurance
 from fools_gold.cli import main
-from fools_gold.core import Engine, Registry
+from fools_gold.core import Engine, Registry, stamp
 from fools_gold.onboarding import write_registry
 from tests.test_contracts_v2 import linux
 from tests.test_pilot import NOW, registry, s3
@@ -105,6 +105,92 @@ class ProbeCorrelationTests(unittest.TestCase):
                 self.assertEqual(
                     result["live"]["detected"], ["synthetic-linux-config"]
                 )
+            finally:
+                engine.close()
+
+    def test_delayed_old_event_does_not_satisfy_the_probe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            engine = engine_in(folder)
+            try:
+                stale = linux("901")
+                stale["time"] = stamp(NOW - timedelta(days=1))
+
+                def probe():
+                    engine.process(stale, NOW + timedelta(seconds=1))
+                    return {
+                        "decoy_ids": ["synthetic-linux-config"],
+                        "actors": ["uid:1001"],
+                    }
+
+                result = run_assurance(
+                    engine,
+                    now=NOW,
+                    probe=probe,
+                    wait_seconds=1,
+                    sleep=lambda _seconds: None,
+                    clock=stepped_clock(NOW),
+                )
+                self.assertFalse(result["ok"])
+                self.assertEqual(
+                    result["live"]["missed"], ["synthetic-linux-config"]
+                )
+                self.assertEqual(result["live"]["evidence"], {})
+            finally:
+                engine.close()
+
+    def test_action_mismatch_does_not_satisfy_the_probe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            engine = engine_in(folder)
+            try:
+                write_event = linux("902", action="write", time=stamp(NOW))
+
+                def probe():
+                    engine.process(write_event, NOW + timedelta(seconds=1))
+                    return {
+                        "decoy_ids": ["synthetic-linux-config"],
+                        "actors": ["uid:1001"],
+                        "actions": ["read"],
+                    }
+
+                result = run_assurance(
+                    engine,
+                    now=NOW,
+                    probe=probe,
+                    wait_seconds=1,
+                    sleep=lambda _seconds: None,
+                    clock=stepped_clock(NOW),
+                )
+                self.assertFalse(result["ok"])
+                self.assertEqual(
+                    result["live"]["missed"], ["synthetic-linux-config"]
+                )
+            finally:
+                engine.close()
+
+    def test_matching_alert_records_per_decoy_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            engine = engine_in(folder)
+            try:
+                current = linux("903", time=stamp(NOW))
+
+                def probe():
+                    engine.process(current, NOW + timedelta(seconds=1))
+                    return {
+                        "decoy_ids": ["synthetic-linux-config"],
+                        "actors": ["uid:1001"],
+                    }
+
+                result = run_assurance(
+                    engine,
+                    now=NOW,
+                    probe=probe,
+                    wait_seconds=1,
+                    sleep=lambda _seconds: None,
+                    clock=stepped_clock(NOW),
+                )
+                self.assertTrue(result["ok"])
+                alert_id = result["live"]["evidence"]["synthetic-linux-config"]
+                self.assertTrue(alert_id.startswith("fg-"))
             finally:
                 engine.close()
 

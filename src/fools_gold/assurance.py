@@ -20,6 +20,7 @@ from .core import ContractError, Engine, Registry, instant, stamp
 from .transport import deliver
 
 CANARY_PREFIX = "fg-canary"
+LIVE_CLOCK_TOLERANCE_SECONDS = 5
 
 
 def canary_registry(now: datetime) -> dict:
@@ -254,6 +255,7 @@ def default_live_probe(registry: Registry, host: str | None = None) -> dict:
         "probed": len(decoys),
         "unsupported": unsupported,
         "actors": sorted(actors),
+        "actions": ["read"],
     }
 
 
@@ -294,7 +296,11 @@ def _run_live_probe(engine, probe, wait_seconds, sleep, clock):
             "unsupported": unsupported,
         }
     expected_actors = set(outcome.get("actors") or []) or None
-    detected = set()
+    expected_actions = set(outcome.get("actions") or ["read"])
+    # Source timestamps have coarser precision than the probe clock; an event
+    # at the boundary is legitimate, but a day-old delayed event is not.
+    window_start = started - timedelta(seconds=LIVE_CLOCK_TOLERANCE_SECONDS)
+    detected = {}
     deadline = started.timestamp() + wait_seconds
     while clock().timestamp() <= deadline:
         for alert_id, evidence in engine.db.execute(
@@ -310,18 +316,25 @@ def _run_live_probe(engine, probe, wait_seconds, sleep, clock):
                 and alert["event"]["actor"] not in expected_actors
             ):
                 continue
+            if instant(alert["event"]["time"]) < window_start:
+                # An old event first ingested now is not proof of live
+                # detection from this probe.
+                continue
+            if not expected_actions.intersection(alert["event"]["actions"]):
+                continue
             if instant(alert["observed_at"]) < started:
                 continue
-            detected.add(alert["decoy_id"])
+            detected[alert["decoy_id"]] = alert_id
         if len(detected) == len(attempted):
             break
         sleep(1)
-    missed = sorted(set(attempted) - detected)
+    missed = sorted(set(attempted) - set(detected))
     return {
         "passed": not missed,
         "started_at": stamp(started),
         "attempted": attempted,
         "detected": sorted(detected),
+        "evidence": detected,
         "missed": missed,
         "unsupported": unsupported,
         **(
