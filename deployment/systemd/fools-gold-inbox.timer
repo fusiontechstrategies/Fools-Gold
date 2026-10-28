@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Fool's Gold CloudTrail inbox pass every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Unit=fools-gold-inbox.service
+
+[Install]
+WantedBy=timers.target

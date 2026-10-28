@@ -19,19 +19,41 @@ The first release is an **offline pilot**, with no AWS or SIEM connection requir
 - Recognize explicitly scoped, expiring authorized access. Keep a decision record instead of silently discarding it.
 - Retain individual alert evidence, link nearby activity, and deduplicate exact replay across restarts.
 - Record a local analyst acknowledgment and its elapsed time.
-- Collect Windows Security 4663 events live through a fixed `wevtutil` query, filtered to registered decoy locations.
+- Collect Windows Security 4663 and denied 4656 events live through a fixed `wevtutil` query, filtered to registered decoy locations.
+- Accept a documented Linux audit sensor contract for POSIX file access.
+- Detect S3 reads, writes, deletes, version reads, copies, `HeadObject` and bucket listings (recon) — including denied attempts — and match listings against registered bucket prefixes.
 - Process CloudTrail log files, including gzip, from a watched local inbox, idempotently by content digest.
-- Deliver retained alerts durably to Splunk HEC over verified TLS or append Wazuh JSONL locally, with bounded retries and a persistent outbox, only when the operator configures it.
+- Deliver retained alerts durably to Splunk HEC over verified TLS or append Wazuh JSONL locally, with bounded retries, a persistent outbox and optional route filtering, only when the operator configures it.
 - Chain alert evidence with HMAC-SHA256 under an operator-held 32-byte key and re-verify the chain later.
+- Tag alerts with coarse ATT&CK techniques and cluster them into per-actor incidents.
+- Write tamper-evident evidence bundles (entry hashes plus HMAC manifest signature) and verify them later.
+- Record assurance runs, publish MTTD/MTTA percentiles, and fail a cron gate when the last successful run is too old.
+- Bootstrap and operate: `init`, `plant`, `demo`, `doctor`, `serve` (loopback dashboard with metrics), `prune`, `backup`, `restore`.
 - Run a self-contained canary exercise (`check`) that can exercise configured delivery end to end.
-- Run repeatable synthetic scenarios that prove the core detection path.
 - Convert bounded Windows Event XML and CloudTrail Records exports, and render Wazuh JSONL or Splunk HEC packets offline.
 
 **No production deployment, real SIEM ingestion, or analyst workflow has been verified.** Live collection is read-only local tooling; delivery is implemented but untested against a real Wazuh/Splunk installation. Demo timing and analyst actions are simulated, not customer results.
 
-## Try the synthetic pilot
+## Try it in sixty seconds
 
 Python 3.12 or newer. No third-party runtime dependencies.
+
+```powershell
+python -m fools_gold demo --out runtime/demo
+python -m fools_gold --registry runtime/demo/registry.json --database runtime/demo/evidence.sqlite serve --port 8080
+```
+
+`demo` writes a synthetic registry, evidence database and a standalone HTML report. `serve` requires a bearer token of 16+ characters in `FG_UI_TOKEN` (or `--token-file`) and binds only `127.0.0.1`; it exposes `/api/alerts`, `/api/report`, `/api/integrity`, `/api/incidents`, `/api/assurance`, `/healthz` and Prometheus `/metrics`.
+
+For a real registry, `init` writes a validated starter document:
+
+```powershell
+python -m fools_gold init --out runtime/live --owner soc-team --windows-host fs01 --windows-path 'C:\Decoys\config-export.txt' --write-key
+python -m fools_gold plant --type config-export --out 'C:\Decoys\config-export.txt'
+python -m fools_gold --registry runtime/live/registry.json --database runtime/live/evidence.sqlite --evidence-key-file runtime/live/evidence.key doctor --max-assurance-hours 24
+```
+
+## Try the synthetic pilot
 
 From the repository directory, in PowerShell:
 

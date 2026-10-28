@@ -32,7 +32,7 @@ Source authentication, original export retention and collection audit policy are
 
 ### Live Windows Security query
 
-`fools_gold.winlog.collect` runs one fixed `wevtutil` XPath query for event 4663 against the local Security log and maps the returned XML envelope through the same hardened parsing as exports. Only events whose normalized host/path match a registered decoy are emitted; contract failures are skipped with a visible count and never silently accepted. Requires Windows; the query is collector configuration, never event-driven.
+`fools_gold.winlog.collect` runs one fixed `wevtutil` XPath query for events 4663 and 4656 against the local Security log and maps the returned XML envelope through the same hardened parsing as exports. Only events whose normalized host/path match a registered decoy are emitted; contract failures are skipped with a visible count and never silently accepted. Requires Windows; the query is collector configuration, never event-driven.
 
 ```powershell
 python -m fools_gold --registry examples/registry.synthetic.json collect-windows --log-epoch synthetic-installation-1 > runtime/windows-events.jsonl
@@ -44,6 +44,24 @@ python -m fools_gold --registry examples/registry.synthetic.json --database runt
 ### CloudTrail log inbox
 
 `fools_gold.trail_inbox.cloudtrail_records_file` processes one CloudTrail log file that already landed in an operator-managed directory (fetching from S3 stays a credential-scoped deployment concern, such as a sync job). Bounds: 16 MiB per file, 10,000 records, 64 KiB per record, bounded gzip decompression. The `trail-inbox` command skips files already processed by SHA-256 digest; a file with malformed records stays unmarked so it can be corrected and retried, while deduplication keeps earlier decisions safe.
+
+## Operator commands
+
+| Command | Purpose | Local side effects |
+|---|---|---|
+| `check` | Self-contained canary suite (temp DB) | none |
+| `assure` | Canary suite recorded in the evidence DB; `--live` reads registered decoy files and waits for the alert | evidence DB |
+| `assure-report` | MTTD/MTTA percentiles, last successful run, `--max-age-hours` gate (exit 2 when stale) | none |
+| `doctor` | Registry expiry, integrity, outbox, assurance, inbox and collector readiness | none |
+| `init` | Validated starter registry, optional 32-byte key file | new files |
+| `plant` | Watermarked synthetic decoy files (`aws-credentials`, `ssh-key`, `config-export`) | new files (0600 on POSIX) |
+| `demo` | Synthetic registry, evidence DB and standalone HTML report | new files |
+| `serve` | Loopback dashboard, `/api/*`, `/healthz`, Prometheus `/metrics`; bearer token required | none |
+| `incidents` | Per-actor alert clusters with ATT&CK tags | none |
+| `bundle` / `verify-bundle` | Tamper-evident evidence zip with hashes and HMAC manifest | new file |
+| `prune` / `backup` / `restore` | Retention and recovery (WAL-safe `VACUUM INTO`) | DB / new file |
+
+`serve` binds only `127.0.0.1`, requires a 16+ character bearer token from `FG_UI_TOKEN` or `--token-file`, serves no files from disk and never follows redirects.
 
 ## Offline payload rendering
 

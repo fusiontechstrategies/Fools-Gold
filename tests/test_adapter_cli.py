@@ -102,3 +102,23 @@ class AdapterCliTests(unittest.TestCase):
         self.assertEqual(rule.find("rule/field").attrib["name"], "fg_product")
         local = ET.parse(root / "deployment/wazuh-localfile.example.xml").getroot()
         self.assertEqual(local.find("log_format").text, "json")
+
+    def test_shipped_deployment_artifacts_are_present_and_scoped(self):
+        root = Path(__file__).resolve().parents[1]
+        expected = {
+            "Dockerfile": "ENTRYPOINT",
+            "docker-compose.yml": "fools-gold",
+            "deployment/systemd/fools-gold-inbox.service": "trail-inbox",
+            "deployment/systemd/fools-gold-inbox.timer": "OnUnitActiveSec",
+            "deployment/terraform/main.tf": "aws_cloudtrail",
+            "deployment/splunk/fools_gold.savedsearches.conf": "fools_gold:alert:json",
+            "deployment/elastic/fools_gold.eql": "fools_gold.alert",
+            "deployment/sentinel/fools_gold.kql": "fools-gold",
+        }
+        for relative, marker in expected.items():
+            with self.subTest(artifact=relative):
+                content = (root / relative).read_text(encoding="utf-8")
+                self.assertIn(marker, content)
+        terraform = (root / "deployment/terraform/main.tf").read_text(encoding="utf-8")
+        self.assertIn("NOT APPLIED", terraform.upper())
+        self.assertNotIn("access_key", terraform)

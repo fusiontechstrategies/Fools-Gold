@@ -27,6 +27,12 @@
 
 **Collection:** the Windows collector queries only the local Security log through a fixed `wevtutil` XPath and never sends data anywhere; the trail inbox reads only operator-staged files. Collector output still requires an authenticated, protected channel to the evidence store.
 
+**Assurance:** `assure --live` reads up to 64 bytes from decoy files registered to this machine name only, then waits for the resulting alert. It never reads non-decoy paths and never writes to decoys.
+
+**Dashboard:** `serve` binds only `127.0.0.1`, requires a 16+ character bearer token compared in constant time, serves no files from disk, bounds request bodies to 4 KiB and exposes acknowledgment only through `POST /api/acknowledge`. Acknowledgment via the dashboard is still an unauthenticated-identity operator action; put it behind your own access control.
+
+**Bundles:** `bundle` hashes every entry and signs the manifest with HMAC-SHA256 when an evidence key is configured; `verify-bundle` reports `signature: unverified` when no key is supplied. Holding the key allows re-signing, so keep it outside the monitored host.
+
 **Storage/availability:** SQLite decisions grow until an operator archives them. This release has no retention scheduler, database quota, HA, authenticated service API, queue or durable invalid-record ledger. Invalid results are stdout/stderr plus nonzero exit status; capture those explicitly. Existing source evidence must remain available for review. Disk full and SQLite corruption can stop ingestion.
 
 **Concurrency:** use one local ingestion/acknowledgment writer. Multiwriter duplicate races and clock ordering are not a supported deployment mode. Monitor failure exit codes and do not retry blindly into a different database.

@@ -1,0 +1,15 @@
+// Fool's Gold starter KQL (Microsoft Sentinel).
+// Assumes a custom table fed by a Logic App / DCR mapping of the flat record.
+
+FoolsGoldAlerts_CL
+| where fg_product_s == "fools-gold"
+| project TimeGenerated, fg_alert_id_s, fg_decoy_id_s, fg_actor_s, fg_actions_s, fg_outcome_s
+
+// Unacknowledged alerts: join with your case tool, or track acknowledgment here.
+FoolsGoldAlerts_CL
+| where fg_product_s == "fools-gold"
+| summarize arg_max(TimeGenerated, *) by fg_alert_id_s
+
+// Recon activity.
+FoolsGoldAlerts_CL
+| where fg_product_s == "fools-gold" and fg_actions_s has "recon"

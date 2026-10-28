@@ -1,0 +1,11 @@
+// Fool's Gold starter EQL (Elastic).
+// Ingest the Wazuh flat record as event.dataset=fools_gold.alert or map the
+// HEC event yourself. Add these to a detection rule in Kibana.
+
+any where event.dataset == "fools_gold.alert"
+
+// Recon against a decoy prefix (fg_actions contains "recon").
+any where event.dataset == "fools_gold.alert" and fg_actions : "recon"
+
+// Unexpected access from a human identity rather than a service role.
+any where event.dataset == "fools_gold.alert" and fg_actor : "*assumed-role*"

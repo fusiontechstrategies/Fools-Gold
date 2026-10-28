@@ -1,0 +1,14 @@
+[Unit]
+Description=Fool's Gold CloudTrail log inbox pass
+After=local-fs.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+StateDirectory=fools-gold
+ExecStart=/usr/local/bin/fools-gold \
+    --registry /etc/fools-gold/registry.json \
+    --database /var/lib/fools-gold/evidence.sqlite \
+    trail-inbox /var/lib/fools-gold/inbox
+# Stage trail files into /var/lib/fools-gold/inbox with the approved sync job.
+# Delivery stays a separate, explicitly configured command.

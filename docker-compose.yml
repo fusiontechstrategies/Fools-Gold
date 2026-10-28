@@ -1,0 +1,14 @@
+services:
+  fools-gold:
+    build: .
+    command: ["demo", "--out", "/var/lib/fools-gold/demo"]
+    volumes:
+      - fools-gold-data:/var/lib/fools-gold
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  fools-gold-data:

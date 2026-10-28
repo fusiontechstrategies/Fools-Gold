@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fools-gold"
-version = "0.2.0"
-description = "Offline cyber decoy detection and assurance pilot"
+version = "0.3.0"
+description = "Cyber decoy detection and detection-assurance toolkit for GovCloud and Windows"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

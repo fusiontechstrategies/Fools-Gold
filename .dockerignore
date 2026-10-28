@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+__pycache__
+*.py[cod]
+*.sqlite*
+runtime
+tests
+docs
+examples
+deployment
+*.md
