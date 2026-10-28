@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .core import ContractError, parse_json, required_dict, text
 from .delivery import splunk_hec_packet, wazuh_json_record
+from .diagnostics import log as log_event
 
 MAX_RESPONSE_BYTES = 4096
 SEND_INTERVAL_SECONDS = 0.25
@@ -244,6 +245,14 @@ def deliver(
                     error = None
                     break
             if error is not None:
+                log_event(
+                    "transport",
+                    "delivery_failed",
+                    destination=destination,
+                    format=payload_format,
+                    alert_id=alert_id,
+                    error=error,
+                )
                 return {
                     "destination": destination,
                     "format": payload_format,

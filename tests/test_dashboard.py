@@ -172,7 +172,7 @@ class DashboardTests(unittest.TestCase):
     def test_bearer_access_still_works_for_scripts(self):
         request = urllib.request.Request(self.base + "/api/report")
         request.add_header("Authorization", f"Bearer {TOKEN}")
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with urllib.request.urlopen(request, timeout=5) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             payload = json.loads(response.read())
         self.assertEqual(payload["decisions"]["alert"], 2)
 

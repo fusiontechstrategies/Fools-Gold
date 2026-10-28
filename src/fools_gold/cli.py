@@ -33,6 +33,7 @@ from .core import (
     parse_json,
     restore_database,
 )
+from .diagnostics import guidance, log
 from .doctor import run_doctor
 from .onboarding import create_demo, write_decoy, write_key, write_registry
 from .reporting import build_bundle, incidents, verify_bundle
@@ -214,6 +215,11 @@ def main(argv=None):
     parser.add_argument(
         "--profile",
         help="JSON profile with non-secret defaults (CLI arguments win)",
+    )
+    parser.add_argument(
+        "--log-json",
+        action="store_true",
+        help="Emit structured, redacted error logs to stderr",
     )
     parser.add_argument("--registry", help="Protected exact-location registry JSON")
     parser.add_argument(
@@ -703,7 +709,13 @@ def main(argv=None):
             print(canonical(engine.report()))
         return 0
     except (ContractError, OSError, UnicodeError, sqlite3.Error) as exc:
-        print(f"Fool's Gold: {exc}", file=sys.stderr)
+        if getattr(args, "log_json", False):
+            log("cli", "error", message=str(exc), command=args.command)
+        else:
+            print(f"Fool's Gold: {exc}", file=sys.stderr)
+        hint = guidance(str(exc))
+        if hint:
+            print(f"hint: {hint}", file=sys.stderr)
         return 2
     finally:
         if engine:

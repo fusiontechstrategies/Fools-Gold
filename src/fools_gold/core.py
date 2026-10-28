@@ -594,6 +594,19 @@ class Engine:
         if "created_at" not in decision_columns:
             self.db.execute("ALTER TABLE decisions ADD COLUMN created_at TEXT")
         self._migrate_outbox()
+        # Bounded routine queries: dashboard pages, status and reports.
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS alerts_received "
+            "ON alerts(received_at DESC)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS assurance_ran "
+            "ON assurance_runs(ran_at DESC)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS checkpoints_created "
+            "ON checkpoints(created_at DESC)"
+        )
 
     def _migrate_outbox(self):
         """Move the pre-destination outbox onto the composite-key schema."""

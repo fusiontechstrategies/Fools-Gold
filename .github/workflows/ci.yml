@@ -26,3 +26,49 @@ jobs:
         env:
           PYTHONPATH: src
         run: python -m scripts.run_synthetic_pilot
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      # Ruff is a verification tool, not a project dependency; it is pinned but
+      # intentionally not hash-locked because it never ships with the package.
+      - name: Install verification tools
+        run: python -m pip install ruff==0.17.2 build
+      - name: Lint
+        run: ruff check .
+  package:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install verification tools
+        run: python -m pip install build
+
+      - name: Build wheel and source distribution
+        run: python -m build --outdir "$RUNNER_TEMP/dist"
+
+      - name: Install the built wheel outside the repository
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          if [ -f "$RUNNER_TEMP/venv/Scripts/python.exe" ]; then
+            PY="$RUNNER_TEMP/venv/Scripts/python.exe"
+          else
+            PY="$RUNNER_TEMP/venv/bin/python"
+          fi
+          "$PY" -m pip install --no-index --find-links "$RUNNER_TEMP/dist" fools-gold
+          "$PY" -c "import shutil,sys; assert shutil.which('fools-gold'), 'console entry point missing'"
+          "$PY" -c "from importlib.metadata import version; assert version('fools-gold') == '0.3.0'"
+          "$PY" -m fools_gold --help > /dev/null
+          "$PY" -m fools_gold check > /dev/null
+          "$PY" -m fools_gold demo --out "$RUNNER_TEMP/fg-demo" > /dev/null
+          test -f "$RUNNER_TEMP/fg-demo/report.html"
+          test -f "$RUNNER_TEMP/fg-demo/evidence.sqlite"

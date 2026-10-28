@@ -191,10 +191,11 @@ def _page_params(params):
 def _alerts_page(engine, params, *, csrf) -> str:
     where, values = _alert_filters(engine, params)
     page, page_size = _page_params(params)
-    total = engine.db.execute(
+    # Bound parameters only; `where` is assembled from fixed fragments.
+    total = engine.db.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         "SELECT COUNT(*) FROM alerts" + where, values
     ).fetchone()[0]
-    rows = engine.db.execute(
+    rows = engine.db.execute(  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         "SELECT id,decoy,actor,received_at,acknowledged_at,evidence,route "
         "FROM alerts" + where + " ORDER BY received_at DESC, id DESC "
         "LIMIT ? OFFSET ?",

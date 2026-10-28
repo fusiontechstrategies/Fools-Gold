@@ -34,9 +34,26 @@ The first release is an **offline pilot**, with no AWS or SIEM connection requir
 
 **No production deployment, real SIEM ingestion, or analyst workflow has been verified.** Live collection is read-only local tooling; delivery is implemented but untested against a real Wazuh/Splunk installation. Demo timing and analyst actions are simulated, not customer results.
 
-## Try it in sixty seconds
+### What is verified locally, and what is not
+
+Verified by the test suite and synthetic exercise: strict parsing and bounds, exact-registry matching, replay/dedup identity, scoped exceptions, HMAC evidence chaining and signed retention checkpoints, bundle hashing/signature states, outbox state machines and failure booking, cursor paging/rollover handling, dashboard authentication/CSRF, recovery procedures, and those CLI flows.
+
+Not verified without real infrastructure: CloudTrail selector behavior and live collection, real Windows SACL/audit policy plus the local `wevtutil` query, real Linux auditd mapping, Wazuh/Splunk parsing, indexing and analyst workflow, TLS trust against a real endpoint, and any GovCloud deployment.
+
+Known gaps, deliberately documented: S3 `DeleteObjects` batches, SMB share events (5145), access-point/Object Lambda ARN variants, copies *from* a decoy to another location, versioned-read ARNs that embed a version id, and SMB/junction/short-name path aliasing. Live assurance reads only registered decoy files for this hostname; Windows actor correlation falls back to new-alert matching because the local SID is not exposed. Integrity is local: deleting every alert, or holding both the database and the HMAC key, is not detectable without external anchoring. Delivery is at-least-once, not exactly-once. The database is single-writer; a second writer fails fast. The dashboard is loopback-only and requires the operator to supply the token at login; it is not a multi-user identity system.
+
+## Install
 
 Python 3.12 or newer. No third-party runtime dependencies.
+
+```powershell
+python -m pip install .
+fools-gold --help
+```
+
+A wheel and source distribution are built by `python -m build`; CI installs the built wheel into a clean virtual environment and runs `fools-gold --help`, `check` and `demo`.
+
+## Try it in sixty seconds
 
 ```powershell
 python -m fools_gold demo --out runtime/demo

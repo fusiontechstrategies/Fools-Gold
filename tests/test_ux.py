@@ -199,7 +199,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_unauthenticated_browsing_redirects_to_login(self):
         request = urllib.request.Request(self.base + "/")
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with urllib.request.urlopen(request, timeout=5) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             self.assertEqual(response.status, 200)
             self.assertIn("login", response.read().decode().lower())
         for path in ("/api/alerts", "/metrics"):
