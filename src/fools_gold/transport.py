@@ -190,8 +190,14 @@ def deliver(
         wazuh_output=wazuh_output,
     )
     payload_format = spec["payload_format"]
+    if route is not None:
+        mapped = engine.route_destination(route)
+        if mapped is not None and mapped != destination:
+            raise ContractError(
+                f"route {route} is mapped to destination {mapped}"
+            )
     if retry_failed:
-        engine.outbox_reset_failed(destination, now)
+        engine.outbox_reset_failed(destination, now, route=route)
     engine.outbox_enqueue(destination, now, route=route)
     sent = 0
     if payload_format == "splunk":
@@ -256,19 +262,26 @@ def deliver(
                 return {
                     "destination": destination,
                     "format": payload_format,
+                    "route": route,
                     "sent": sent,
                     "failed": alert_id,
                     "error": error,
+                    "failed_remaining": engine.outbox_failed_count(
+                        destination, route=route
+                    ),
                     "complete": False,
                 }
             engine.outbox_mark(destination, alert_id, "sent", now)
             engine.db.commit()
             sent += 1
+    failed_remaining = engine.outbox_failed_count(destination, route=route)
     return {
         "destination": destination,
         "format": payload_format,
+        "route": route,
         "sent": sent,
         "failed": None,
         "error": None,
-        "complete": True,
+        "failed_remaining": failed_remaining,
+        "complete": failed_remaining == 0,
     }

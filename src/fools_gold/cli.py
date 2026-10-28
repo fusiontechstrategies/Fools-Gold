@@ -655,9 +655,25 @@ def main(argv=None):
         if args.command == "trail-inbox":
             return run_trail_inbox(engine, args.directory)
         if args.command == "deliver":
-            if bool(args.destination) == bool(args.format):
+            if args.destination and args.format:
                 raise ContractError(
                     "deliver requires exactly one of --destination or --format"
+                )
+            mapped = (
+                engine.route_destination(args.route) if args.route else None
+            )
+            target = args.destination or args.format or mapped
+            if target is None:
+                if args.route:
+                    raise ContractError(
+                        "route is not mapped; specify --destination or --format"
+                    )
+                raise ContractError(
+                    "deliver requires exactly one of --destination or --format"
+                )
+            if args.route and mapped and target != mapped:
+                raise ContractError(
+                    f"route {args.route} is mapped to destination {mapped}"
                 )
             if args.format == "splunk" and (
                 args.splunk_host is None or args.splunk_port is None
@@ -669,7 +685,7 @@ def main(argv=None):
                 raise ContractError("Wazuh delivery requires --wazuh-output")
             summary = deliver(
                 engine,
-                args.destination or args.format,
+                target,
                 datetime.now(UTC),
                 splunk_host=args.splunk_host,
                 splunk_port=args.splunk_port,

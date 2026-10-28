@@ -1233,6 +1233,11 @@ class Engine:
         payload_format = self._destination_format(destination)
         if route is not None:
             text(route, "delivery route", 64)
+            mapped = self.route_destination(route)
+            if mapped is not None and mapped != destination:
+                raise ContractError(
+                    f"route {route} is mapped to destination {mapped}"
+                )
         with self._write_guard():
             cursor = self.db.execute(
                 "INSERT OR IGNORE INTO outbox(alert_id,destination,payload_format,"
@@ -1276,15 +1281,32 @@ class Engine:
             (state, bounded_error, stamp(now), destination, alert_id),
         )
 
-    def outbox_reset_failed(self, destination: str, now: datetime) -> int:
+    def outbox_reset_failed(
+        self, destination: str, now: datetime, route=None
+    ) -> int:
         self._destination_format(destination)
+        if route is not None:
+            text(route, "delivery route", 64)
         with self._write_guard():
             cursor = self.db.execute(
                 "UPDATE outbox SET state='pending',updated_at=? "
-                "WHERE destination=? AND state='failed'",
-                (stamp(now), destination),
+                "WHERE destination=? AND state='failed' "
+                "AND alert_id IN ("
+                "SELECT id FROM alerts WHERE (? IS NULL OR route = ?))",
+                (stamp(now), destination, route, route),
             )
         return cursor.rowcount
+
+    def outbox_failed_count(self, destination: str, route=None) -> int:
+        self._destination_format(destination)
+        if route is not None:
+            text(route, "delivery route", 64)
+        return self.db.execute(
+            "SELECT COUNT(*) FROM outbox o JOIN alerts a ON a.id=o.alert_id "
+            "WHERE o.destination=? AND o.state='failed' "
+            "AND (? IS NULL OR a.route = ?)",
+            (destination, route, route),
+        ).fetchone()[0]
 
     def outbox_report(self) -> dict:
         rows = self.db.execute(
