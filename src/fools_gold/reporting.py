@@ -12,8 +12,22 @@ from .core import ContractError, canonical, instant, parse_json, stamp
 
 MAX_ENTRY_BYTES = 32 * 1024 * 1024
 MAX_BUNDLE_BYTES = 128 * 1024 * 1024
-BUNDLE_PAYLOADS = {"alerts.jsonl", "report.json", "checkpoints.jsonl"}
+BUNDLE_PAYLOADS = {
+    "alerts.jsonl",
+    "report.json",
+    "checkpoints.jsonl",
+    "annotations.jsonl",
+    "delivery.jsonl",
+    "assurance.jsonl",
+    "acceptances.jsonl",
+}
 BUNDLE_FILES = BUNDLE_PAYLOADS | {"manifest.json", "manifest.sig"}
+SUPPLEMENTAL_FILES = (
+    "annotations.jsonl",
+    "delivery.jsonl",
+    "assurance.jsonl",
+    "acceptances.jsonl",
+)
 MAX_GAP_SECONDS = 86400
 
 
@@ -96,10 +110,65 @@ def build_bundle(engine, target, now: datetime | None = None) -> str:
             "boundary_prev_mac,first_retained_id,mac FROM checkpoints ORDER BY id"
         )
     ]
+    annotations = [
+        {
+            "alert_id": alert_id,
+            "acknowledged_at": acknowledged_at,
+            "acknowledged_by": acknowledged_by,
+        }
+        for alert_id, acknowledged_at, acknowledged_by in engine.db.execute(
+            "SELECT id,acknowledged_at,acknowledged_by FROM alerts "
+            "WHERE acknowledged_at IS NOT NULL ORDER BY id"
+        )
+    ]
+    delivery_rows = [
+        {
+            "alert_id": alert_id,
+            "destination": destination,
+            "payload_format": payload_format,
+            "state": state,
+            "attempts": attempts,
+            "last_error": last_error,
+            "updated_at": updated_at,
+        }
+        for (
+            alert_id,
+            destination,
+            payload_format,
+            state,
+            attempts,
+            last_error,
+            updated_at,
+        ) in engine.db.execute(
+            "SELECT alert_id,destination,payload_format,state,attempts,"
+            "last_error,updated_at FROM outbox ORDER BY alert_id,destination"
+        )
+    ]
+    assurance_runs = list(reversed(engine.assurance_history(1000)))
+    acceptances = list(reversed(engine.acceptances(1000)))
+    supplemental = {
+        "checkpoints": len(checkpoints),
+        "annotations": len(annotations),
+        "delivery": len(delivery_rows),
+        "assurance_runs": len(assurance_runs),
+        "acceptances": len(acceptances),
+    }
     files = {
         "alerts.jsonl": "".join(canonical(alert) + "\n" for alert in alerts).encode(),
         "checkpoints.jsonl": "".join(
             canonical(checkpoint) + "\n" for checkpoint in checkpoints
+        ).encode(),
+        "annotations.jsonl": "".join(
+            canonical(annotation) + "\n" for annotation in annotations
+        ).encode(),
+        "delivery.jsonl": "".join(
+            canonical(row) + "\n" for row in delivery_rows
+        ).encode(),
+        "assurance.jsonl": "".join(
+            canonical(run) + "\n" for run in assurance_runs
+        ).encode(),
+        "acceptances.jsonl": "".join(
+            canonical(item) + "\n" for item in acceptances
         ).encode(),
         "report.json": canonical(
             {
@@ -107,6 +176,7 @@ def build_bundle(engine, target, now: datetime | None = None) -> str:
                 "report": engine.report(),
                 "outbox": engine.outbox_report(),
                 "integrity": integrity,
+                "supplemental": supplemental,
             }
         ).encode(),
     }
@@ -207,17 +277,31 @@ def verify_bundle(path, mac_key: bytes | None = None) -> dict:
         "report",
         "outbox",
         "integrity",
+        "supplemental",
     }:
         raise ContractError("bundle report has an unexpected shape")
-    try:
-        checkpoint_lines = [
-            line for line in data["checkpoints.jsonl"].splitlines() if line.strip()
-        ]
-        checkpoints = [parse_json(line) for line in checkpoint_lines]
-    except (ContractError, UnicodeError) as exc:
-        raise ContractError("bundle retention checkpoints are invalid") from exc
-    if any(not isinstance(checkpoint, dict) for checkpoint in checkpoints):
-        raise ContractError("bundle retention checkpoints must be objects")
+    parsed = {}
+    for name in ("checkpoints.jsonl",) + SUPPLEMENTAL_FILES:
+        try:
+            lines = [line for line in data[name].splitlines() if line.strip()]
+            items = [parse_json(line) for line in lines]
+        except (ContractError, UnicodeError) as exc:
+            raise ContractError(f"bundle {name} is invalid") from exc
+        if any(not isinstance(item, dict) for item in items):
+            raise ContractError(f"bundle {name} entries must be objects")
+        parsed[name] = items
+    supplemental = report["supplemental"]
+    expected_counts = {
+        "checkpoints": len(parsed["checkpoints.jsonl"]),
+        "annotations": len(parsed["annotations.jsonl"]),
+        "delivery": len(parsed["delivery.jsonl"]),
+        "assurance_runs": len(parsed["assurance.jsonl"]),
+        "acceptances": len(parsed["acceptances.jsonl"]),
+    }
+    if not isinstance(supplemental, dict) or supplemental != expected_counts:
+        raise ContractError(
+            "bundle report supplemental counts do not match payloads"
+        )
     signature = None
     if "manifest.sig" in data:
         if mac_key is None:
