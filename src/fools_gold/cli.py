@@ -32,6 +32,7 @@ from .core import (
     parse_json,
     restore_database,
 )
+from .reporting import build_bundle, incidents, verify_bundle
 from .trail_inbox import MAX_INBOX_BYTES, cloudtrail_records_file
 from .transport import deliver
 
@@ -260,6 +261,18 @@ def main(argv=None):
         "restore", help="Replace the database with a verified backup"
     )
     restore.add_argument("--source", required=True)
+    timeline = commands.add_parser(
+        "incidents", help="Cluster alerts per actor into incidents"
+    )
+    timeline.add_argument("--gap-seconds", type=int, default=300)
+    bundle = commands.add_parser(
+        "bundle", help="Write a tamper-evident evidence bundle"
+    )
+    bundle.add_argument("--out", required=True)
+    verify = commands.add_parser(
+        "verify-bundle", help="Validate an evidence bundle's hashes and signature"
+    )
+    verify.add_argument("--file", required=True)
     args = parser.parse_args(argv)
     engine = None
     try:
@@ -289,6 +302,15 @@ def main(argv=None):
             restore_database(args.source, destination)
             print(canonical({"restored": True, "database": str(destination)}))
             return 0
+        if args.command == "verify-bundle":
+            mac_key = (
+                load_evidence_key(args.evidence_key_file)
+                if args.evidence_key_file
+                else None
+            )
+            outcome = verify_bundle(args.file, mac_key)
+            print(canonical(outcome))
+            return 0 if outcome["ok"] else 2
         if args.command == "check":
             result = run_check(transport_config=_transport_config(args, "check"))
             print(canonical(result))
@@ -325,6 +347,12 @@ def main(argv=None):
             return 0
         if args.command == "backup":
             print(canonical({"backup": engine.backup(args.out)}))
+            return 0
+        if args.command == "incidents":
+            print(canonical(incidents(engine, args.gap_seconds)))
+            return 0
+        if args.command == "bundle":
+            print(canonical({"bundle": build_bundle(engine, args.out)}))
             return 0
         if args.command == "ingest":
             errors = 0
