@@ -18,7 +18,7 @@ PATH_KEYS = (
     "state_file",
     "inbox",
 )
-STRING_KEYS = PATH_KEYS + ("splunk_host", "route")
+STRING_KEYS = PATH_KEYS + ("splunk_host", "route", "destination")
 PROFILE_KEYS = set(STRING_KEYS) | {"splunk_port"}
 
 

@@ -71,7 +71,7 @@ Evidence bundles contain `alerts.jsonl`, `report.json` and `checkpoints.jsonl` p
 
 ## Delivery
 
-`deliver --format splunk --splunk-host H --splunk-port P` sends rendered HEC packets over verified HTTPS using `FG_SPLUNK_HEC_TOKEN` from the environment; `deliver --format wazuh --wazuh-output PATH` appends rendered records to a local protected file. Every retained alert is enqueued per format exactly once, optionally filtered with `--route`; the outbox records state and per-attempt errors, `--retry-failed` requeues failures. Delivery success is transport-level only and never touches acknowledgment.
+Destinations are named and stored without secrets: `destination add --name soc-a --format wazuh --path PATH` or `--format splunk --host H --port P`, listed with `destination list`, and mapped from registry routes with `route map --route soc-primary --destination soc-a`. `deliver --destination NAME` sends only that destination's queue; the legacy `deliver --format splunk --splunk-host H --splunk-port P` / `--format wazuh --wazuh-output PATH` forms remain for ad-hoc use. Each destination has its own outbox key, so retries, failure resets, status and completion reporting are scoped per destination (optionally narrowed with `--route`). Tokens still come only from `FG_SPLUNK_HEC_TOKEN`. Delivery is at-least-once: a crash after sink acceptance but before the SQLite commit can resend a packet, so deduplicate by alert ID. Delivery success is transport-level only and never touches acknowledgment.
 
 Output is JSONL. A Wazuh/Splunk transport must preserve `decision=alert` and the nested alert, while routing rejections and expected access separately. Printing a record is not proof of SIEM delivery.
 

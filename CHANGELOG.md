@@ -17,6 +17,7 @@ All notable changes to Fool's Gold are documented here. The project follows the 
 
 ### Enhanced
 
+- Named destinations (`destination add/list`) and explicit route mappings (`route map/list`); the outbox is keyed per destination so retries, failure resets, status and completion reporting are scoped, with a tested migration from the legacy format-keyed outbox.
 - The dashboard is browser-usable: login form with short-lived HttpOnly session cookies, CSRF-protected acknowledgment, alert filters (search/source/decoy/route/ack), stable pagination, alert detail with event/receipt/delivery/acknowledgment times, incidents view and summary cards, while the bearer API and metrics endpoint remain available.
 
 ### Hardened

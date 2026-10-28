@@ -540,12 +540,20 @@ class Engine:
             );
             CREATE INDEX IF NOT EXISTS alert_correlation ON alerts(decoy, actor, received_at DESC);
             CREATE TABLE IF NOT EXISTS outbox (
-                alert_id TEXT NOT NULL, payload_format TEXT NOT NULL,
+                alert_id TEXT NOT NULL, destination TEXT NOT NULL,
+                payload_format TEXT NOT NULL,
                 state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
                 last_error TEXT, updated_at TEXT NOT NULL,
-                PRIMARY KEY (alert_id, payload_format)
+                PRIMARY KEY (alert_id, destination)
             );
-            CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(payload_format, state);
+            CREATE TABLE IF NOT EXISTS destinations (
+                name TEXT PRIMARY KEY, payload_format TEXT NOT NULL,
+                host TEXT, port INTEGER, path TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS routes (
+                route TEXT PRIMARY KEY, destination TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS trail_files (
                 digest TEXT PRIMARY KEY, processed_at TEXT NOT NULL
             );
@@ -585,6 +593,33 @@ class Engine:
         }
         if "created_at" not in decision_columns:
             self.db.execute("ALTER TABLE decisions ADD COLUMN created_at TEXT")
+        self._migrate_outbox()
+
+    def _migrate_outbox(self):
+        """Move the pre-destination outbox onto the composite-key schema."""
+        columns = {
+            row[1] for row in self.db.execute("PRAGMA table_info(outbox)")
+        }
+        if "destination" not in columns:
+            self.db.execute(
+                "CREATE TABLE outbox_v2 ("
+                "alert_id TEXT NOT NULL, destination TEXT NOT NULL, "
+                "payload_format TEXT NOT NULL, state TEXT NOT NULL, "
+                "attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, "
+                "updated_at TEXT NOT NULL, PRIMARY KEY (alert_id, destination))"
+            )
+            self.db.execute(
+                "INSERT INTO outbox_v2(alert_id,destination,payload_format,state,"
+                "attempts,last_error,updated_at) "
+                "SELECT alert_id,payload_format,payload_format,state,attempts,"
+                "last_error,updated_at FROM outbox"
+            )
+            self.db.execute("DROP TABLE outbox")
+            self.db.execute("ALTER TABLE outbox_v2 RENAME TO outbox")
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS outbox_destination_state "
+            "ON outbox(destination, state)"
+        )
 
     def close(self):
         try:
@@ -855,38 +890,147 @@ class Engine:
             "ok": not failures,
         }
 
-    def outbox_enqueue(self, payload_format: str, now: datetime, route=None) -> int:
+    def add_destination(
+        self,
+        now: datetime,
+        name: str,
+        payload_format: str,
+        *,
+        host=None,
+        port=None,
+        path=None,
+    ):
+        if not isinstance(name, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9-]{0,31}", name
+        ):
+            raise ContractError(
+                "destination name must be 1 to 32 lowercase letters, digits or dashes"
+            )
         if payload_format not in ("wazuh", "splunk"):
             raise ContractError("unsupported delivery format")
+        if payload_format == "splunk":
+            if host is None or port is None or path is not None:
+                raise ContractError("Splunk destinations require host and port only")
+            host = text(host, "destination host", 255)
+            if "/" in host or "\\" in host:
+                raise ContractError("destination host must be a bare hostname")
+            if type(port) is not int or not 1 <= port <= 65535:
+                raise ContractError("destination port must be 1 to 65535")
+        else:
+            if path is None or host is not None or port is not None:
+                raise ContractError("Wazuh destinations require a path only")
+            path = text(path, "destination path", 2048)
+        try:
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO destinations(name,payload_format,host,port,path,created_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (name, payload_format, host, port, path, stamp(now)),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ContractError("destination already exists") from exc
+
+    def destination(self, name: str):
+        text(name, "destination name", 32)
+        row = self.db.execute(
+            "SELECT name,payload_format,host,port,path FROM destinations WHERE name=?",
+            (name,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "name": row[0],
+            "payload_format": row[1],
+            "host": row[2],
+            "port": row[3],
+            "path": row[4],
+        }
+
+    def destinations(self) -> list[dict]:
+        return [
+            {
+                "name": name,
+                "payload_format": payload_format,
+                "host": host,
+                "port": port,
+                "path": path,
+            }
+            for name, payload_format, host, port, path in self.db.execute(
+                "SELECT name,payload_format,host,port,path FROM destinations "
+                "ORDER BY name"
+            )
+        ]
+
+    def map_route(self, now: datetime, route: str, destination: str):
+        text(route, "route", 64)
+        if self.destination(destination) is None:
+            raise ContractError("route destination does not exist")
+        with self.db:
+            self.db.execute(
+                "INSERT INTO routes(route,destination,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(route) DO UPDATE SET "
+                "destination=excluded.destination, updated_at=excluded.updated_at",
+                (route, destination, stamp(now)),
+            )
+
+    def route_destination(self, route: str):
+        row = self.db.execute(
+            "SELECT destination FROM routes WHERE route=?", (route,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def routes(self) -> list[dict]:
+        return [
+            {
+                "route": route,
+                "destination": destination,
+                "updated_at": updated,
+            }
+            for route, destination, updated in self.db.execute(
+                "SELECT route,destination,updated_at FROM routes ORDER BY route"
+            )
+        ]
+
+    def _destination_format(self, destination: str) -> str:
+        spec = self.destination(destination)
+        if spec is not None:
+            return spec["payload_format"]
+        if destination in ("wazuh", "splunk"):
+            return destination
+        raise ContractError("unknown delivery destination")
+
+    def outbox_enqueue(self, destination: str, now: datetime, route=None) -> int:
+        payload_format = self._destination_format(destination)
         if route is not None:
             text(route, "delivery route", 64)
         with self.db:
             cursor = self.db.execute(
-                "INSERT OR IGNORE INTO outbox(alert_id,payload_format,state,attempts,updated_at) "
-                "SELECT id,?,'pending',0,? FROM alerts WHERE (? IS NULL OR route = ?)",
-                (payload_format, stamp(now), route, route),
+                "INSERT OR IGNORE INTO outbox(alert_id,destination,payload_format,"
+                "state,attempts,updated_at) "
+                "SELECT id,?,?,'pending',0,? FROM alerts "
+                "WHERE (? IS NULL OR route = ?)",
+                (destination, payload_format, stamp(now), route, route),
             )
         return cursor.rowcount
 
     def outbox_batch(
-        self, payload_format: str, limit: int, route=None
+        self, destination: str, limit: int, route=None
     ) -> list[tuple[str, dict]]:
-        if payload_format not in ("wazuh", "splunk"):
-            raise ContractError("unsupported delivery format")
+        self._destination_format(destination)
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ContractError("delivery batch limit must be 1 to 1000")
         if route is not None:
             text(route, "delivery route", 64)
         rows = self.db.execute(
             "SELECT o.alert_id,a.evidence FROM outbox o JOIN alerts a ON a.id=o.alert_id "
-            "WHERE o.payload_format=? AND o.state='pending' "
+            "WHERE o.destination=? AND o.state='pending' "
             "AND (? IS NULL OR a.route = ?) ORDER BY o.rowid LIMIT ?",
-            (payload_format, route, route, limit),
+            (destination, route, route, limit),
         ).fetchall()
         return [(alert_id, json.loads(evidence)) for alert_id, evidence in rows]
 
     def outbox_mark(
-        self, payload_format: str, alert_id: str, state: str, now: datetime, error=None
+        self, destination: str, alert_id: str, state: str, now: datetime, error=None
     ):
         if state not in ("sent", "failed"):
             raise ContractError("unsupported outbox state")
@@ -898,28 +1042,27 @@ class Engine:
             bounded_error = cleaned.strip()[:256] or None
         self.db.execute(
             "UPDATE outbox SET state=?,attempts=attempts+1,last_error=?,updated_at=? "
-            "WHERE payload_format=? AND alert_id=?",
-            (state, bounded_error, stamp(now), payload_format, alert_id),
+            "WHERE destination=? AND alert_id=?",
+            (state, bounded_error, stamp(now), destination, alert_id),
         )
 
-    def outbox_reset_failed(self, payload_format: str, now: datetime) -> int:
-        if payload_format not in ("wazuh", "splunk"):
-            raise ContractError("unsupported delivery format")
+    def outbox_reset_failed(self, destination: str, now: datetime) -> int:
+        self._destination_format(destination)
         with self.db:
             cursor = self.db.execute(
                 "UPDATE outbox SET state='pending',updated_at=? "
-                "WHERE payload_format=? AND state='failed'",
-                (stamp(now), payload_format),
+                "WHERE destination=? AND state='failed'",
+                (stamp(now), destination),
             )
         return cursor.rowcount
 
     def outbox_report(self) -> dict:
         rows = self.db.execute(
-            "SELECT payload_format,state,COUNT(*) FROM outbox GROUP BY payload_format,state"
+            "SELECT destination,state,COUNT(*) FROM outbox GROUP BY destination,state"
         ).fetchall()
         counts: dict[str, dict[str, int]] = {}
-        for payload_format, state, count in rows:
-            counts.setdefault(payload_format, {})[state] = count
+        for destination, state, count in rows:
+            counts.setdefault(destination, {})[state] = count
         return {"schema_version": 1, "outbox": counts}
 
     def trail_file_processed(self, digest: str) -> bool:

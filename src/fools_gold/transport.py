@@ -128,9 +128,43 @@ def wazuh_append(path, packet: bytes):
             pass
 
 
+def resolve_destination(
+    engine,
+    destination: str,
+    *,
+    splunk_host=None,
+    splunk_port=None,
+    wazuh_output=None,
+) -> dict:
+    """Resolve a stored destination, or an ad-hoc legacy format destination."""
+    spec = engine.destination(destination)
+    if spec is not None:
+        return spec
+    if destination == "splunk" and splunk_host is not None and splunk_port is not None:
+        return {
+            "name": destination,
+            "payload_format": "splunk",
+            "host": splunk_host,
+            "port": splunk_port,
+            "path": None,
+        }
+    if destination == "wazuh" and wazuh_output is not None:
+        return {
+            "name": destination,
+            "payload_format": "wazuh",
+            "host": None,
+            "port": None,
+            "path": wazuh_output,
+        }
+    raise ContractError(
+        "unknown delivery destination; add it with `destination add` or supply "
+        "the legacy --format options"
+    )
+
+
 def deliver(
     engine,
-    payload_format: str,
+    destination: str,
     now,
     *,
     splunk_host=None,
@@ -142,28 +176,35 @@ def deliver(
     limit=64,
     route=None,
 ) -> dict:
-    """Send pending outbox packets with bounded attempts; stop at first failure.
+    """Send pending outbox packets for one destination; stop at first failure.
 
     connection_factory exists for loopback tests only. Production delivery
     always uses verified HTTPS; no insecure context is selectable here.
     """
-    if payload_format not in ("wazuh", "splunk"):
-        raise ContractError("unsupported delivery format")
+    spec = resolve_destination(
+        engine,
+        destination,
+        splunk_host=splunk_host,
+        splunk_port=splunk_port,
+        wazuh_output=wazuh_output,
+    )
+    payload_format = spec["payload_format"]
     if retry_failed:
-        engine.outbox_reset_failed(payload_format, now)
-    engine.outbox_enqueue(payload_format, now, route=route)
+        engine.outbox_reset_failed(destination, now)
+    engine.outbox_enqueue(destination, now, route=route)
     sent = 0
     if payload_format == "splunk":
+        splunk_host = spec["host"]
+        splunk_port = spec["port"]
         if splunk_host is None or splunk_port is None:
-            raise ContractError(
-                "Splunk delivery requires an operator-selected host and port"
-            )
+            raise ContractError("Splunk destination is missing host or port")
         token = hec_token() if token is None else _valid_token(token)
     else:
+        wazuh_output = spec["path"]
         if wazuh_output is None:
-            raise ContractError("Wazuh delivery requires an output file path")
+            raise ContractError("Wazuh destination is missing an output path")
     while True:
-        batch = engine.outbox_batch(payload_format, limit, route=route)
+        batch = engine.outbox_batch(destination, limit, route=route)
         if not batch:
             break
         for alert_id, alert in batch:
@@ -193,7 +234,7 @@ def deliver(
                     # Each failed attempt is recorded durably so the outbox
                     # reflects every real try, not just the final outcome.
                     engine.outbox_mark(
-                        payload_format, alert_id, "failed", now, error=str(exc)
+                        destination, alert_id, "failed", now, error=str(exc)
                     )
                     engine.db.commit()
                     error = str(exc)
@@ -204,16 +245,18 @@ def deliver(
                     break
             if error is not None:
                 return {
+                    "destination": destination,
                     "format": payload_format,
                     "sent": sent,
                     "failed": alert_id,
                     "error": error,
                     "complete": False,
                 }
-            engine.outbox_mark(payload_format, alert_id, "sent", now)
+            engine.outbox_mark(destination, alert_id, "sent", now)
             engine.db.commit()
             sent += 1
     return {
+        "destination": destination,
         "format": payload_format,
         "sent": sent,
         "failed": None,

@@ -274,8 +274,9 @@ def main(argv=None):
         help="Deliver retained alerts to an operator-configured endpoint",
     )
     deliver_parser.add_argument(
-        "--format", choices=("wazuh", "splunk"), required=True
+        "--destination", help="Named destination registered with `destination add`"
     )
+    deliver_parser.add_argument("--format", choices=("wazuh", "splunk"))
     deliver_parser.add_argument("--splunk-host")
     deliver_parser.add_argument("--splunk-port", type=int)
     deliver_parser.add_argument("--wazuh-output")
@@ -318,6 +319,31 @@ def main(argv=None):
     )
     accept.add_argument("--note", required=True)
     accept.add_argument("--actor", required=True)
+    destination_parser = commands.add_parser(
+        "destination", help="Manage named delivery destinations"
+    )
+    destination_commands = destination_parser.add_subparsers(
+        dest="destination_command", required=True
+    )
+    destination_add = destination_commands.add_parser("add")
+    destination_add.add_argument("--name", required=True)
+    destination_add.add_argument(
+        "--format", choices=("wazuh", "splunk"), required=True
+    )
+    destination_add.add_argument("--host")
+    destination_add.add_argument("--port", type=int)
+    destination_add.add_argument("--path")
+    destination_commands.add_parser("list")
+    route_parser = commands.add_parser(
+        "route", help="Manage route-to-destination mappings"
+    )
+    route_commands = route_parser.add_subparsers(
+        dest="route_command", required=True
+    )
+    route_map = route_commands.add_parser("map")
+    route_map.add_argument("--route", required=True)
+    route_map.add_argument("--destination", required=True)
+    route_commands.add_parser("list")
     prune = commands.add_parser(
         "prune", help="Delete evidence older than a retention window"
     )
@@ -610,6 +636,10 @@ def main(argv=None):
         if args.command == "trail-inbox":
             return run_trail_inbox(engine, args.directory)
         if args.command == "deliver":
+            if bool(args.destination) == bool(args.format):
+                raise ContractError(
+                    "deliver requires exactly one of --destination or --format"
+                )
             if args.format == "splunk" and (
                 args.splunk_host is None or args.splunk_port is None
             ):
@@ -620,7 +650,7 @@ def main(argv=None):
                 raise ContractError("Wazuh delivery requires --wazuh-output")
             summary = deliver(
                 engine,
-                args.format,
+                args.destination or args.format,
                 datetime.now(UTC),
                 splunk_host=args.splunk_host,
                 splunk_port=args.splunk_port,
@@ -632,6 +662,31 @@ def main(argv=None):
             summary.update(engine.outbox_report())
             print(canonical(summary))
             return 0 if summary["complete"] else 2
+        if args.command == "destination":
+            if args.destination_command == "add":
+                engine.add_destination(
+                    datetime.now(UTC),
+                    args.name,
+                    args.format,
+                    host=args.host,
+                    port=args.port,
+                    path=args.path,
+                )
+                print(canonical({"destination": args.name, "format": args.format}))
+            else:
+                print(canonical({"destinations": engine.destinations()}))
+            return 0
+        if args.command == "route":
+            if args.route_command == "map":
+                engine.map_route(datetime.now(UTC), args.route, args.destination)
+                print(
+                    canonical(
+                        {"route": args.route, "destination": args.destination}
+                    )
+                )
+            else:
+                print(canonical({"routes": engine.routes()}))
+            return 0
         if args.command == "export-alerts":
             for alert in engine.export_alerts():
                 print(canonical({"decision": "alert", "alert": alert}))
