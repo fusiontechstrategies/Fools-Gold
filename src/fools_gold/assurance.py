@@ -113,6 +113,14 @@ def _canary_windows(now: datetime) -> dict:
     }
 
 
+def canary_events(now: datetime) -> list[tuple[str, dict]]:
+    """Named canary events reused by the demo and the assurance suite."""
+    return [
+        ("Canary GovCloud object read", _canary_s3(now)),
+        ("Canary Windows document read", _canary_windows(now)),
+    ]
+
+
 def _scenario(name, passed, detail=None):
     result = {"name": name, "passed": passed}
     if detail:

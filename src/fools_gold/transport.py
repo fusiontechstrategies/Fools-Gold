@@ -42,8 +42,8 @@ def hec_token() -> str:
 def _https_factory(host: str, port: int):
     # Production delivery is intentionally HTTPS: the default context keeps
     # hostname and certificate-chain verification enabled with no bypass.
-    # nosemgrep: python.lang.security.audit.httpsconnection-detected.httpsconnection-detected
-    return http.client.HTTPSConnection(
+    # (Suppression below is justified by that verified-TLS construction.)
+    return http.client.HTTPSConnection(  # nosemgrep: python.lang.security.audit.httpsconnection-detected.httpsconnection-detected
         host, port, timeout=5, context=ssl.create_default_context()
     )
 

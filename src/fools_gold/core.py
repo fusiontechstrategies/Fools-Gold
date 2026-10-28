@@ -428,12 +428,20 @@ class Registry:
 
 
 class Engine:
-    def __init__(self, registry: Registry, database: str | Path, mac_key: bytes | None = None):
+    def __init__(
+        self,
+        registry: Registry,
+        database: str | Path,
+        mac_key: bytes | None = None,
+        thread_safe: bool = False,
+    ):
         self.registry = registry
         if mac_key is not None and (not isinstance(mac_key, bytes) or len(mac_key) != 32):
             raise ContractError("evidence key must be exactly 32 bytes")
         self.mac_key = mac_key
-        self.db = sqlite3.connect(str(database))
+        # The dashboard shares one connection across request threads under a
+        # lock; every other caller keeps sqlite3's same-thread guarantee.
+        self.db = sqlite3.connect(str(database), check_same_thread=not thread_safe)
         try:
             self._initialize()
         except BaseException:

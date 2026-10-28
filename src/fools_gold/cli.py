@@ -32,9 +32,12 @@ from .core import (
     parse_json,
     restore_database,
 )
+from .doctor import run_doctor
+from .onboarding import create_demo, write_decoy, write_key, write_registry
 from .reporting import build_bundle, incidents, verify_bundle
 from .trail_inbox import MAX_INBOX_BYTES, cloudtrail_records_file
 from .transport import deliver
+from .ui import make_server
 
 
 def load_registry(path):
@@ -273,6 +276,44 @@ def main(argv=None):
         "verify-bundle", help="Validate an evidence bundle's hashes and signature"
     )
     verify.add_argument("--file", required=True)
+    doctor = commands.add_parser(
+        "doctor", help="Check local deployment readiness"
+    )
+    doctor.add_argument("--inbox", help="Trail inbox directory to check")
+    doctor.add_argument("--max-assurance-hours", type=int)
+    init = commands.add_parser(
+        "init", help="Write a starter registry (and optional evidence key)"
+    )
+    init.add_argument("--out", required=True)
+    init.add_argument("--owner", required=True)
+    init.add_argument("--s3-bucket")
+    init.add_argument("--s3-key")
+    init.add_argument("--s3-account")
+    init.add_argument("--s3-region", default="us-gov-west-1")
+    init.add_argument("--windows-host")
+    init.add_argument("--windows-path")
+    init.add_argument("--linux-host")
+    init.add_argument("--linux-path")
+    init.add_argument("--write-key", action="store_true")
+    plant = commands.add_parser(
+        "plant", help="Write a watermarked synthetic decoy file"
+    )
+    plant.add_argument(
+        "--type",
+        choices=("aws-credentials", "ssh-key", "config-export"),
+        required=True,
+    )
+    plant.add_argument("--out", required=True)
+    plant.add_argument("--force", action="store_true")
+    demo = commands.add_parser(
+        "demo", help="Create a self-contained synthetic demo with an HTML report"
+    )
+    demo.add_argument("--out", default="runtime/demo")
+    serve = commands.add_parser(
+        "serve", help="Serve the loopback dashboard (bearer token required)"
+    )
+    serve.add_argument("--port", type=int, default=8080)
+    serve.add_argument("--token-file")
     args = parser.parse_args(argv)
     engine = None
     try:
@@ -311,6 +352,56 @@ def main(argv=None):
             outcome = verify_bundle(args.file, mac_key)
             print(canonical(outcome))
             return 0 if outcome["ok"] else 2
+        if args.command == "init":
+            s3 = None
+            if args.s3_bucket:
+                if not (args.s3_key and args.s3_account):
+                    raise ContractError(
+                        "init S3 decoy requires --s3-key and --s3-account"
+                    )
+                s3 = {
+                    "bucket": args.s3_bucket,
+                    "key": args.s3_key,
+                    "account": args.s3_account,
+                    "region": args.s3_region,
+                }
+            windows = None
+            if args.windows_host or args.windows_path:
+                if not (args.windows_host and args.windows_path):
+                    raise ContractError(
+                        "init Windows decoy requires --windows-host and --windows-path"
+                    )
+                windows = {"host": args.windows_host, "path": args.windows_path}
+            linux_decoy = None
+            if args.linux_host or args.linux_path:
+                if not (args.linux_host and args.linux_path):
+                    raise ContractError(
+                        "init Linux decoy requires --linux-host and --linux-path"
+                    )
+                linux_decoy = {"host": args.linux_host, "path": args.linux_path}
+            outputs = {
+                "registry": write_registry(
+                    args.out,
+                    owner=args.owner,
+                    s3=s3,
+                    windows=windows,
+                    linux=linux_decoy,
+                )
+            }
+            if args.write_key:
+                outputs["key"] = write_key(args.out)
+            print(canonical(outputs))
+            return 0
+        if args.command == "plant":
+            print(
+                canonical(
+                    {"decoy": write_decoy(args.type, args.out, force=args.force)}
+                )
+            )
+            return 0
+        if args.command == "demo":
+            print(canonical(create_demo(args.out)))
+            return 0
         if args.command == "check":
             result = run_check(transport_config=_transport_config(args, "check"))
             print(canonical(result))
@@ -327,7 +418,40 @@ def main(argv=None):
             if args.evidence_key_file
             else None
         )
-        engine = Engine(load_registry(args.registry), path, mac_key=mac_key)
+        engine = Engine(
+            load_registry(args.registry),
+            path,
+            mac_key=mac_key,
+            thread_safe=args.command == "serve",
+        )
+        if args.command == "doctor":
+            outcome = run_doctor(
+                engine,
+                inbox=args.inbox,
+                max_assurance_hours=args.max_assurance_hours,
+            )
+            print(canonical(outcome))
+            return 0 if outcome["ok"] else 2
+        if args.command == "serve":
+            token = ""
+            if args.token_file:
+                with Path(args.token_file).open("rb") as handle:
+                    token = handle.read(257).decode("ascii", "replace").strip()
+            else:
+                token = os.environ.get("FG_UI_TOKEN", "")
+            server = make_server(engine, token, args.port)
+            host, port = server.server_address
+            print(
+                f"Fool's Gold dashboard: http://{host}:{port}/",
+                file=sys.stderr,
+            )
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                server.server_close()
+            return 0
         if args.command == "assure":
             result = run_assurance(
                 engine,
