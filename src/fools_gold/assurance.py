@@ -347,7 +347,27 @@ def run_assurance(
     if type(wait_seconds) is not int or not 1 <= wait_seconds <= 300:
         raise ContractError("wait seconds must be an integer from 1 to 300")
     clock = clock or (lambda: datetime.now(UTC))
-    result = run_check(now=now, transport_config=transport_config)
+    try:
+        result = run_check(now=now, transport_config=transport_config)
+    except ContractError as exc:
+        # Transport setup failures (missing token, bad endpoint) must be
+        # recorded, not raised past the assurance history.
+        result = {
+            "synthetic": True,
+            "ok": False,
+            "scenarios": [
+                {
+                    "name": "Assurance run",
+                    "passed": False,
+                    "detail": str(exc),
+                }
+            ],
+            "failed_scenarios": 1,
+            "decisions": {},
+            "acknowledgment_seconds": [],
+            "delivery": None,
+            "notice": f"assurance failed: {exc}",
+        }
     result["mode"] = "live" if probe is not None else "canary"
     if probe is not None:
         live = _run_live_probe(report_engine, probe, wait_seconds, sleep, clock)
@@ -356,12 +376,48 @@ def run_assurance(
         if not live["passed"]:
             result["ok"] = False
             result["failed_scenarios"] += 1
-    report_engine.record_assurance(
+    stages = {
+        "synthetic": {
+            "status": "pass"
+            if all(
+                scenario["passed"]
+                for scenario in result["scenarios"]
+                if scenario["name"] != "Live decoy probe"
+            )
+            else "fail"
+        },
+        "live": (
+            {"status": "pass" if result["live"]["passed"] else "fail"}
+            if probe is not None
+            else {"status": "not_run"}
+        ),
+        "transport": (
+            {
+                "status": "pass"
+                if result["delivery"]["complete"]
+                else "fail"
+            }
+            if result.get("delivery")
+            else (
+                {"status": "fail", "detail": "transport failed before delivery"}
+                if transport_config
+                else {"status": "not_run"}
+            )
+        ),
+        "ingestion": {"status": "unverified"},
+        "analyst_acknowledgment": {"status": "unverified"},
+    }
+    result["stages"] = stages
+    result["run_id"] = report_engine.record_assurance(
         now,
         result["mode"],
         result["ok"],
         result["failed_scenarios"],
-        {"scenarios": result["scenarios"], "delivery": result.get("delivery")},
+        {
+            "scenarios": result["scenarios"],
+            "delivery": result.get("delivery"),
+            "stages": stages,
+        },
     )
     return result
 
@@ -374,18 +430,66 @@ def _percentile(values, fraction):
     return ordered[index]
 
 
-def assurance_report(engine: Engine, *, max_age_hours=None, now: datetime | None = None):
-    """Summarize assurance history and detection/acknowledgment latencies."""
+def assurance_report(
+    engine: Engine,
+    *,
+    max_age_hours=None,
+    require_mode=None,
+    now: datetime | None = None,
+):
+    """Summarize assurance history, stages and detection/acknowledgment latencies.
+
+    `require_mode` gates freshness on a specific mode so a passing synthetic
+    run cannot satisfy a live-collection requirement.
+    """
     now = now or datetime.now(UTC)
     if max_age_hours is not None and (
         type(max_age_hours) is not int or not 0 <= max_age_hours <= 24 * 3650
     ):
         raise ContractError("max age hours must be a nonnegative integer")
+    if require_mode not in (None, "canary", "live"):
+        raise ContractError("required assurance mode must be canary or live")
     history = engine.assurance_history(1000)
     alerts = list(engine.export_alerts())
     delays = [alert["telemetry_delay_seconds"] for alert in alerts]
     acknowledgments = engine.report()["acknowledgment_seconds"]
-    last_ok = next((run for run in history if run["ok"]), None)
+    latest = history[0] if history else None
+    stages = dict(latest["details"].get("stages") or {}) if latest else {}
+    accepted = {}
+    for item in engine.acceptances(1000):
+        accepted.setdefault(item["stage"], item)
+    for stage in ("ingestion", "analyst_acknowledgment"):
+        if stage in accepted:
+            stages[stage] = {
+                "status": "operator_verified",
+                "actor": accepted[stage]["actor"],
+                "recorded_at": accepted[stage]["recorded_at"],
+                "note": accepted[stage]["note"],
+            }
+        else:
+            stages[stage] = {"status": "unverified"}
+    last_ok_by_mode = {}
+    for mode in ("canary", "live"):
+        run = next(
+            (item for item in history if item["ok"] and item["mode"] == mode), None
+        )
+        last_ok_by_mode[mode] = (
+            None
+            if run is None
+            else {
+                "ran_at": run["ran_at"],
+                "run_id": run["run_id"],
+                "age_hours": round(
+                    (now - instant(run["ran_at"])).total_seconds() / 3600, 3
+                ),
+            }
+        )
+    candidates = (
+        [run for run in history if run["mode"] == require_mode]
+        if require_mode
+        else history
+    )
+    last_ok = next((run for run in candidates if run["ok"]), None)
     age_hours = None
     if last_ok is not None:
         age_hours = round(
@@ -399,7 +503,12 @@ def assurance_report(engine: Engine, *, max_age_hours=None, now: datetime | None
         "runs": len(history),
         "passed": sum(1 for run in history if run["ok"]),
         "failed": sum(1 for run in history if not run["ok"]),
+        "latest_run_id": latest["run_id"] if latest else None,
+        "stages": stages,
+        "last_ok_by_mode": last_ok_by_mode,
+        "require_mode": require_mode,
         "last_ok_at": last_ok["ran_at"] if last_ok else None,
+        "last_ok_run_id": last_ok["run_id"] if last_ok else None,
         "last_ok_age_hours": age_hours,
         "mttd_seconds": {
             "p50": _percentile(delays, 0.50),

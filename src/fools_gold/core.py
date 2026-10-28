@@ -15,6 +15,7 @@ import os
 import posixpath
 import re
 import sqlite3
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -559,7 +560,17 @@ class Engine:
                 deleted_alerts INTEGER NOT NULL, boundary_prev_mac TEXT NOT NULL,
                 first_retained_id TEXT, mac TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS acceptances (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stage TEXT NOT NULL, note TEXT NOT NULL, actor TEXT NOT NULL,
+                recorded_at TEXT NOT NULL
+            );
         """)
+        assurance_columns = {
+            row[1] for row in self.db.execute("PRAGMA table_info(assurance_runs)")
+        }
+        if "run_id" not in assurance_columns:
+            self.db.execute("ALTER TABLE assurance_runs ADD COLUMN run_id TEXT")
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(alerts)")}
         migrations = {
             "evidence_mac": "ALTER TABLE alerts ADD COLUMN evidence_mac TEXT",
@@ -933,41 +944,80 @@ class Engine:
 
     def record_assurance(
         self, now: datetime, mode: str, ok: bool, failed_scenarios: int, details: dict
-    ):
+    ) -> str:
         text(mode, "assurance mode", 32)
         if type(failed_scenarios) is not int or failed_scenarios < 0:
             raise ContractError("failed scenario count must be a nonnegative integer")
+        run_id = uuid.uuid4().hex
         with self.db:
             self.db.execute(
-                "INSERT INTO assurance_runs(ran_at,mode,ok,failed_scenarios,details) "
-                "VALUES(?,?,?,?,?)",
+                "INSERT INTO assurance_runs(ran_at,mode,ok,failed_scenarios,details,run_id) "
+                "VALUES(?,?,?,?,?,?)",
                 (
                     stamp(now),
                     mode,
                     1 if ok else 0,
                     failed_scenarios,
                     canonical(required_dict(details, "assurance details")),
+                    run_id,
                 ),
             )
+        return run_id
 
     def assurance_history(self, limit: int = 50) -> list[dict]:
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ContractError("assurance history limit must be 1 to 1000")
         rows = self.db.execute(
-            "SELECT id,ran_at,mode,ok,failed_scenarios,details FROM assurance_runs "
-            "ORDER BY id DESC LIMIT ?",
+            "SELECT id,ran_at,mode,ok,failed_scenarios,details,run_id "
+            "FROM assurance_runs ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [
             {
-                "id": run_id,
+                "id": row_id,
+                "run_id": run_id,
                 "ran_at": ran_at,
                 "mode": mode,
                 "ok": bool(ok),
                 "failed_scenarios": failed,
                 "details": json.loads(details),
             }
-            for run_id, ran_at, mode, ok, failed, details in rows
+            for row_id, ran_at, mode, ok, failed, details, run_id in rows
+        ]
+
+    ACCEPTANCE_STAGES = ("ingestion", "analyst_acknowledgment")
+
+    def record_acceptance(
+        self, now: datetime, stage: str, note: str, actor: str
+    ) -> int:
+        if stage not in self.ACCEPTANCE_STAGES:
+            raise ContractError("unsupported acceptance stage")
+        text(note, "acceptance note", 512)
+        text(actor, "acceptance actor", 200)
+        with self.db:
+            cursor = self.db.execute(
+                "INSERT INTO acceptances(stage,note,actor,recorded_at) VALUES(?,?,?,?)",
+                (stage, note, actor, stamp(now)),
+            )
+        return cursor.lastrowid
+
+    def acceptances(self, limit: int = 100) -> list[dict]:
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ContractError("acceptance limit must be 1 to 1000")
+        rows = self.db.execute(
+            "SELECT id,stage,note,actor,recorded_at FROM acceptances "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "id": row_id,
+                "stage": stage,
+                "note": note,
+                "actor": actor,
+                "recorded_at": recorded_at,
+            }
+            for row_id, stage, note, actor, recorded_at in rows
         ]
 
     def last_assurance(self):

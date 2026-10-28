@@ -306,6 +306,18 @@ def main(argv=None):
         help="Show assurance history and MTTD/MTTA metrics",
     )
     report.add_argument("--max-age-hours", type=int)
+    report.add_argument("--require-mode", choices=("canary", "live"))
+    accept = commands.add_parser(
+        "accept",
+        help="Record operator confirmation of ingestion or analyst acknowledgment",
+    )
+    accept.add_argument(
+        "--stage",
+        choices=("ingestion", "analyst_acknowledgment"),
+        required=True,
+    )
+    accept.add_argument("--note", required=True)
+    accept.add_argument("--actor", required=True)
     prune = commands.add_parser(
         "prune", help="Delete evidence older than a retention window"
     )
@@ -528,9 +540,27 @@ def main(argv=None):
             print(canonical(result))
             return 0 if result["ok"] else 2
         if args.command == "assure-report":
-            outcome = assurance_report(engine, max_age_hours=args.max_age_hours)
+            outcome = assurance_report(
+                engine,
+                max_age_hours=args.max_age_hours,
+                require_mode=args.require_mode,
+            )
             print(canonical(outcome))
             return 2 if outcome["stale"] else 0
+        if args.command == "accept":
+            acceptance_id = engine.record_acceptance(
+                datetime.now(UTC), args.stage, args.note, args.actor
+            )
+            print(
+                canonical(
+                    {
+                        "accepted": True,
+                        "id": acceptance_id,
+                        "stage": args.stage,
+                    }
+                )
+            )
+            return 0
         if args.command == "prune":
             counts = engine.prune(datetime.now(UTC), args.older_than_days)
             print(canonical({"pruned": counts}))
