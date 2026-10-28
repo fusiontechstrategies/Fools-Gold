@@ -630,6 +630,7 @@ class Engine:
         if mac_key is not None and (not isinstance(mac_key, bytes) or len(mac_key) != 32):
             raise ContractError("evidence key must be exactly 32 bytes")
         self.mac_key = mac_key
+        self._chain_verified = False
         self._db_path = (
             None if str(database) == ":memory:" else Path(database)
         )
@@ -836,6 +837,28 @@ class Engine:
         linked = (prev_mac or "").encode() + canonical(evidence).encode()
         return hmac.new(self.mac_key, linked, hashlib.sha256).hexdigest()
 
+    def _signed_alert_count(self) -> int:
+        return self.db.execute(
+            "SELECT COUNT(*) FROM alerts WHERE evidence_mac IS NOT NULL"
+        ).fetchone()[0]
+
+    def _ensure_chain_key(self):
+        """Refuse chain writes that could mix unsigned evidence into a chain."""
+        if self._signed_alert_count() == 0:
+            return
+        if self.mac_key is None:
+            raise ContractError(
+                "database contains signed evidence; supply the evidence key"
+            )
+        if self._chain_verified:
+            return
+        outcome = self.verify_integrity()
+        if not outcome["ok"]:
+            raise ContractError(
+                "evidence key does not match the existing evidence chain"
+            )
+        self._chain_verified = True
+
     def process(self, raw: dict, received_at: datetime) -> dict:
         now = instant(stamp(received_at))
         event = normalize(raw)
@@ -844,27 +867,32 @@ class Engine:
             raise ContractError("event timestamp is in the future")
         key = event["source"] + ":" + event["id"]
         fingerprint = digest(raw)
-        previous = self.db.execute(
-            "SELECT fingerprint,result FROM decisions WHERE event_key=?", (key,)
-        ).fetchone()
-        if previous:
-            if previous[0] != fingerprint:
-                raise ContractError(
-                    "event identifier collision with different evidence"
-                )
-            return {
-                "decision": "duplicate",
-                "original_decision": json.loads(previous[1])["decision"],
-                "event_id": event["id"],
-            }
-        decoy = self.registry.match(event)
-        result = {
-            "schema_version": 1,
-            "event_id": event["id"],
-            "decision": "unmatched",
-            "registry_sha256": self.registry.fingerprint,
-        }
         with self._write_guard():
+            # The predecessor/key check and the duplicate check must share the
+            # write transaction so concurrent writers cannot fork the chain or
+            # both insert the same decision.
+            self._ensure_chain_key()
+            previous = self.db.execute(
+                "SELECT fingerprint,result FROM decisions WHERE event_key=?",
+                (key,),
+            ).fetchone()
+            if previous:
+                if previous[0] != fingerprint:
+                    raise ContractError(
+                        "event identifier collision with different evidence"
+                    )
+                return {
+                    "decision": "duplicate",
+                    "original_decision": json.loads(previous[1])["decision"],
+                    "event_id": event["id"],
+                }
+            decoy = self.registry.match(event)
+            result = {
+                "schema_version": 1,
+                "event_id": event["id"],
+                "decision": "unmatched",
+                "registry_sha256": self.registry.fingerprint,
+            }
             if decoy:
                 expired = now >= instant(decoy["expires_at"]) or event_time >= instant(
                     decoy["expires_at"]
@@ -956,16 +984,17 @@ class Engine:
     def acknowledge(self, alert_id: str, actor: str, at: datetime):
         text(alert_id, "alert id", 64)
         text(actor, "analyst", 256)
-        row = self.db.execute(
-            "SELECT received_at,acknowledged_at FROM alerts WHERE id=?", (alert_id,)
-        ).fetchone()
-        if not row:
-            raise ContractError("unknown alert")
-        if instant(stamp(at)) < instant(row[0]):
-            raise ContractError("acknowledgment cannot precede receipt")
-        if row[1]:
-            raise ContractError("alert has already been acknowledged")
         with self._write_guard():
+            row = self.db.execute(
+                "SELECT received_at,acknowledged_at FROM alerts WHERE id=?",
+                (alert_id,),
+            ).fetchone()
+            if not row:
+                raise ContractError("unknown alert")
+            if instant(stamp(at)) < instant(row[0]):
+                raise ContractError("acknowledgment cannot precede receipt")
+            if row[1]:
+                raise ContractError("alert has already been acknowledged")
             self.db.execute(
                 "UPDATE alerts SET acknowledged_at=?,acknowledged_by=? WHERE id=?",
                 (stamp(at), actor, alert_id),
@@ -1374,6 +1403,10 @@ class Engine:
         cutoff = stamp(now - timedelta(days=older_than_days))
         counts = {}
         with self._write_guard():
+            # Destructive retention on a signed chain requires the matching key
+            # and a currently valid chain; nothing is deleted otherwise.
+            self._ensure_chain_key()
+            signed_alerts = self._signed_alert_count()
             doomed = self.db.execute(
                 "SELECT COUNT(*) FROM alerts WHERE received_at < ?", (cutoff,)
             ).fetchone()[0]
@@ -1382,7 +1415,7 @@ class Engine:
                 "ORDER BY rowid LIMIT 1",
                 (cutoff,),
             ).fetchone()
-            if self.mac_key is not None and doomed:
+            if self.mac_key is not None and signed_alerts and doomed:
                 boundary = (retained[1] if retained else None) or ""
                 fields = self._checkpoint_fields(
                     stamp(now),
