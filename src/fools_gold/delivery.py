@@ -26,10 +26,23 @@ def validate_alert(alert: dict):
         raise ContractError("invalid alert id")
     for field in ("decoy_id", "owner", "response_procedure"):
         text(alert.get(field), field)
+    if alert.get("route") is not None:
+        text(alert["route"], "alert route", 64)
+    techniques = alert.get("mitre_techniques")
+    if techniques is not None and (
+        not isinstance(techniques, list)
+        or any(
+            not isinstance(name, str)
+            or not re.fullmatch(r"T[0-9]{4}(\.[0-9]{3})?", name)
+            for name in techniques
+        )
+    ):
+        raise ContractError("invalid technique tags")
     event = required_dict(alert.get("event"), "normalized event")
     if text(event.get("source"), "event source", 64) not in {
         "windows.security",
         "aws.cloudtrail.s3",
+        "linux.audit",
     }:
         raise ContractError("invalid normalized event source")
     if type(event.get("schema_version")) is not int or event["schema_version"] != 1:
@@ -43,7 +56,10 @@ def validate_alert(alert: dict):
     if (
         not isinstance(event.get("actions"), list)
         or not event["actions"]
-        or any(a not in ("read", "write", "append", "delete") for a in event["actions"])
+        or any(
+            action not in ("read", "write", "append", "delete", "recon")
+            for action in event["actions"]
+        )
     ):
         raise ContractError("invalid normalized actions")
     return event
@@ -90,6 +106,8 @@ def wazuh_json_record(alert: dict) -> bytes:
                 "fg_event_time": event["time"],
                 "fg_observed_at": alert["observed_at"],
                 "fg_outcome": event["outcome"],
+                "fg_route": alert.get("route") or "",
+                "fg_mitre": ",".join(alert.get("mitre_techniques") or []),
                 "fg_runbook": alert["response_procedure"],
             }
         )

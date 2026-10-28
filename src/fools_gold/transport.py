@@ -146,7 +146,7 @@ def deliver(
         if wazuh_output is None:
             raise ContractError("Wazuh delivery requires an output file path")
     while True:
-        batch = engine.outbox_batch(payload_format, limit)
+        batch = engine.outbox_batch(payload_format, limit, route=route)
         if not batch:
             break
         for alert_id, alert in batch:

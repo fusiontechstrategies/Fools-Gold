@@ -33,6 +33,8 @@
 
 **Bundles:** `bundle` hashes every entry and signs the manifest with HMAC-SHA256 when an evidence key is configured; `verify-bundle` reports `signature: unverified` when no key is supplied. Holding the key allows re-signing, so keep it outside the monitored host.
 
+**Recovery:** `restore` rejects a source with uncommitted WAL sidecar data; restore only files written by `backup` (a self-contained `VACUUM INTO` copy). `prune` also removes outbox rows whose alerts were deleted so delivery state cannot silently accumulate.
+
 **Storage/availability:** SQLite decisions grow until an operator archives them. This release has no retention scheduler, database quota, HA, authenticated service API, queue or durable invalid-record ledger. Invalid results are stdout/stderr plus nonzero exit status; capture those explicitly. Existing source evidence must remain available for review. Disk full and SQLite corruption can stop ingestion.
 
 **Concurrency:** use one local ingestion/acknowledgment writer. Multiwriter duplicate races and clock ordering are not a supported deployment mode. Monitor failure exit codes and do not retry blindly into a different database.

@@ -31,6 +31,8 @@ Required fields: recipient account, region, request bucket/key (or bucket/prefix
 
 An `errorCode` yields outcome `denied`, which still alerts for a matched decoy. Anonymous identities, batch deletes (`DeleteObjects`), access-point ARN variants, IAM honeycredentials and Object Lambda are outside this adapter. Rejections are visible and must not be counted as covered.
 
+Two known limitations to confirm against real exports: `GetObjectVersion` events whose resource ARN embeds a version identifier are rejected (the contract expects the plain object ARN), and `CopyObject` is represented only for its destination write — a copy *from* a decoy to another location is not independently reported. A bucket listing that spans several registered decoys produces one alert for the first matching decoy in registry order.
+
 ## Windows input
 
 See [the flattened synthetic collector event](../examples/events.synthetic.jsonl). This is a documented collector contract, not arbitrary Windows XML, Wazuh alerts or Splunk exports.

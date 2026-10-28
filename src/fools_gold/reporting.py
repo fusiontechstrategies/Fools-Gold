@@ -119,7 +119,10 @@ def verify_bundle(path, mac_key: bytes | None = None) -> dict:
         raise ContractError("bundle must be a regular file")
     try:
         with zipfile.ZipFile(bundle) as archive:
-            names = set(archive.namelist())
+            entries = archive.namelist()
+            names = set(entries)
+            if len(entries) != len(names):
+                raise ContractError("bundle contains duplicate entries")
             if not names or not names <= BUNDLE_FILES or "manifest.json" not in names:
                 raise ContractError("bundle contains unexpected entries")
             data = {}
@@ -143,6 +146,15 @@ def verify_bundle(path, mac_key: bytes | None = None) -> dict:
         "file_sha256",
     }:
         raise ContractError("bundle manifest has an unexpected shape")
+    if (
+        type(manifest["schema_version"]) is not int
+        or manifest["schema_version"] != 1
+    ):
+        raise ContractError("unsupported bundle manifest schema")
+    if manifest["integrity_ok"] not in (True, False, None):
+        raise ContractError("bundle manifest has an invalid integrity flag")
+    if type(manifest["alerts"]) is not int or manifest["alerts"] < 0:
+        raise ContractError("bundle manifest has an invalid alert count")
     hashes = manifest["file_sha256"]
     expected_entries = set(data) - {"manifest.json", "manifest.sig"}
     if not isinstance(hashes, dict) or set(hashes) != expected_entries:

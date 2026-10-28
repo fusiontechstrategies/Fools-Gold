@@ -699,15 +699,20 @@ class Engine:
             )
         return cursor.rowcount
 
-    def outbox_batch(self, payload_format: str, limit: int) -> list[tuple[str, dict]]:
+    def outbox_batch(
+        self, payload_format: str, limit: int, route=None
+    ) -> list[tuple[str, dict]]:
         if payload_format not in ("wazuh", "splunk"):
             raise ContractError("unsupported delivery format")
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ContractError("delivery batch limit must be 1 to 1000")
+        if route is not None:
+            text(route, "delivery route", 64)
         rows = self.db.execute(
             "SELECT o.alert_id,a.evidence FROM outbox o JOIN alerts a ON a.id=o.alert_id "
-            "WHERE o.payload_format=? AND o.state='pending' ORDER BY o.rowid LIMIT ?",
-            (payload_format, limit),
+            "WHERE o.payload_format=? AND o.state='pending' "
+            "AND (? IS NULL OR a.route = ?) ORDER BY o.rowid LIMIT ?",
+            (payload_format, route, route, limit),
         ).fetchall()
         return [(alert_id, json.loads(evidence)) for alert_id, evidence in rows]
 
@@ -823,6 +828,11 @@ class Engine:
             counts["outbox"] = self.db.execute(
                 "DELETE FROM outbox WHERE updated_at < ?", (cutoff,)
             ).rowcount
+            # Alerts removed above must not leave outbox rows that can never
+            # be delivered or drained.
+            counts["outbox"] += self.db.execute(
+                "DELETE FROM outbox WHERE alert_id NOT IN (SELECT id FROM alerts)"
+            ).rowcount
             counts["assurance_runs"] = self.db.execute(
                 "DELETE FROM assurance_runs WHERE ran_at < ?", (cutoff,)
             ).rowcount
@@ -854,6 +864,11 @@ def restore_database(source, destination) -> str:
     dst = Path(destination)
     if src.is_symlink() or not src.is_file():
         raise ContractError("restore source must be a regular file")
+    wal = Path(str(src) + "-wal")
+    if wal.exists() and wal.stat().st_size > 0:
+        raise ContractError(
+            "restore source has uncommitted WAL data; use a file written by `backup`"
+        )
     if dst.is_symlink() or not dst.parent.is_dir():
         raise ContractError(
             "restore requires an existing trusted directory and a nonsymlink leaf"

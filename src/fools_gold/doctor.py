@@ -5,13 +5,18 @@ import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .core import instant
+from .core import ContractError, instant
 
 EXPIRY_WARNING_DAYS = 14
 
 
 def run_doctor(engine, *, inbox=None, max_assurance_hours=None, now=None) -> dict:
     now = now or datetime.now(UTC)
+    if max_assurance_hours is not None and (
+        type(max_assurance_hours) is not int
+        or not 0 <= max_assurance_hours <= 24 * 3650
+    ):
+        raise ContractError("max assurance hours must be a nonnegative integer")
     checks = []
 
     def record(name, status, detail=""):
@@ -109,6 +114,14 @@ def run_doctor(engine, *, inbox=None, max_assurance_hours=None, now=None) -> dic
             "decoy_files",
             "fail" if missing else "pass",
             f"missing: {missing}" if missing else f"{len(expected)} present",
+        )
+    elif any(
+        d["source"] in ("windows.security", "linux.audit") for d in decoys
+    ):
+        record(
+            "decoy_files",
+            "warn",
+            f"no file decoys registered for host {host or '(unknown)'}",
         )
 
     if platform.system() == "Windows":

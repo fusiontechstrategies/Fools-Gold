@@ -151,7 +151,7 @@ def _render_report(alerts, summary, incident_data, outbox, now) -> str:
             f"<td>{html.escape(alert['event']['actor'])}</td>"
             f"<td>{html.escape(', '.join(alert['event']['actions']))}</td>"
             f"<td>{html.escape(alert['event']['outcome'])}</td>"
-            f"<td>{alert['telemetry_delay_seconds']}</td>"
+            f"<td>{html.escape(str(alert['telemetry_delay_seconds']))}</td>"
             f"<td>{html.escape(', '.join(alert.get('mitre_techniques') or []))}</td>"
             "</tr>"
         )

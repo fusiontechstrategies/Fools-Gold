@@ -13,7 +13,16 @@ All notable changes to Fool's Gold are documented here. The project follows the 
 - **Operator UX:** `doctor` checks registry, expiry, integrity, outbox, assurance, inbox and collector readiness; `init` writes a validated starter registry and key; `plant` writes watermarked synthetic decoy files; `demo` builds a self-contained demo database and HTML report; `serve` runs a loopback-only, bearer-token dashboard with `/api/*` endpoints, `/healthz` and Prometheus `/metrics`.
 - **Delivery:** route-filtered enqueueing (`deliver --route`).
 - **Artifacts:** Dockerfile, Compose file, systemd inbox service/timer, Terraform skeleton, and Splunk/Elastic/Sentinel starter content.
-- **Tests:** 192 tests including adversarial and maintenance coverage.
+- **Tests:** 202 tests including adversarial, hardening and maintenance coverage.
+
+### Hardened
+
+- Route filtering applies to delivery batches, not just enqueueing, so one run cannot send another route's pending alerts.
+- Delivery accept Lists Linux audit events and `recon` actions (previously rejected at render time), and flat Wazuh records carry `fg_route` and `fg_mitre`.
+- Dashboard API responses are bounded (`/api/alerts?limit=`, 5000 max) with `nosniff`/`no-store` headers.
+- `prune` removes orphaned outbox rows; `restore` rejects sources with uncommitted WAL data and never leaves a partial file.
+- Bundle verification pins the manifest schema, rejects duplicate zip entries, and validates manifest field types.
+- `doctor` validates its age bound and warns when file decoys are registered for a different host.
 
 ### Changed
 

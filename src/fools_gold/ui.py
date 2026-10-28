@@ -7,6 +7,7 @@ import json
 import threading
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlparse
 
 from .assurance import assurance_report
 from .core import ContractError, canonical
@@ -41,7 +42,12 @@ def _metrics(engine) -> str:
 
 def _dashboard(engine) -> str:
     counts = engine.report()
-    alerts = list(engine.export_alerts())[:200]
+    alerts = [
+        json.loads(row[0])
+        for row in engine.db.execute(
+            "SELECT evidence FROM alerts ORDER BY received_at DESC LIMIT 200"
+        )
+    ]
     rows = "".join(
         "<tr>"
         f"<td>{html.escape(alert['alert_id'])}</td>"
@@ -87,6 +93,8 @@ def make_server(engine, token: str, port: int = 0) -> HTTPServer:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -100,7 +108,8 @@ def make_server(engine, token: str, port: int = 0) -> HTTPServer:
             )
 
         def do_GET(self):
-            path = self.path.split("?", 1)[0]
+            parsed = urlparse(self.path)
+            path, query = parsed.path, parse_qs(parsed.query)
             if path == "/healthz":
                 return self._json(200, {"ok": True})
             if not self._authorized():
@@ -113,7 +122,20 @@ def make_server(engine, token: str, port: int = 0) -> HTTPServer:
                         "text/html; charset=utf-8",
                     )
                 if path == "/api/alerts":
-                    return self._json(200, {"alerts": list(engine.export_alerts())})
+                    limit_param = query.get("limit", ["200"])[0]
+                    if not limit_param.isdigit() or not 1 <= int(limit_param) <= 5000:
+                        return self._json(
+                            400, {"error": "limit must be 1 to 5000"}
+                        )
+                    alerts = [
+                        json.loads(row[0])
+                        for row in engine.db.execute(
+                            "SELECT evidence FROM alerts "
+                            "ORDER BY received_at DESC LIMIT ?",
+                            (int(limit_param),),
+                        )
+                    ]
+                    return self._json(200, {"alerts": alerts})
                 if path == "/api/report":
                     return self._json(200, engine.report())
                 if path == "/api/integrity":
