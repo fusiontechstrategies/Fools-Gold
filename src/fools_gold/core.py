@@ -11,10 +11,11 @@ import hmac
 import json
 import math
 import ntpath
+import os
 import posixpath
 import re
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 
@@ -441,10 +442,13 @@ class Engine:
 
     def _initialize(self):
         self.db.execute("PRAGMA foreign_keys=ON")
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA busy_timeout=5000")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS decisions (
-                event_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result TEXT NOT NULL
+                event_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
+                result TEXT NOT NULL, created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS alerts (
                 id TEXT PRIMARY KEY, decoy TEXT NOT NULL, actor TEXT NOT NULL,
@@ -462,6 +466,11 @@ class Engine:
             CREATE TABLE IF NOT EXISTS trail_files (
                 digest TEXT PRIMARY KEY, processed_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS assurance_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ran_at TEXT NOT NULL, mode TEXT NOT NULL, ok INTEGER NOT NULL,
+                failed_scenarios INTEGER NOT NULL, details TEXT NOT NULL
+            );
         """)
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(alerts)")}
         migrations = {
@@ -472,6 +481,11 @@ class Engine:
         for name, statement in migrations.items():
             if name not in columns:
                 self.db.execute(statement)
+        decision_columns = {
+            row[1] for row in self.db.execute("PRAGMA table_info(decisions)")
+        }
+        if "created_at" not in decision_columns:
+            self.db.execute("ALTER TABLE decisions ADD COLUMN created_at TEXT")
 
     def close(self):
         self.db.close()
@@ -594,8 +608,8 @@ class Engine:
                     )
                     result.update(decision="alert", alert=evidence)
             self.db.execute(
-                "INSERT INTO decisions VALUES(?,?,?)",
-                (key, fingerprint, canonical(result)),
+                "INSERT INTO decisions(event_key,fingerprint,result,created_at) VALUES(?,?,?,?)",
+                (key, fingerprint, canonical(result), stamp(now)),
             )
         return result
 
@@ -664,14 +678,16 @@ class Engine:
             "ok": not failures,
         }
 
-    def outbox_enqueue(self, payload_format: str, now: datetime) -> int:
+    def outbox_enqueue(self, payload_format: str, now: datetime, route=None) -> int:
         if payload_format not in ("wazuh", "splunk"):
             raise ContractError("unsupported delivery format")
+        if route is not None:
+            text(route, "delivery route", 64)
         with self.db:
             cursor = self.db.execute(
                 "INSERT OR IGNORE INTO outbox(alert_id,payload_format,state,attempts,updated_at) "
-                "SELECT id,?,'pending',0,? FROM alerts",
-                (payload_format, stamp(now)),
+                "SELECT id,?,'pending',0,? FROM alerts WHERE (? IS NULL OR route = ?)",
+                (payload_format, stamp(now), route, route),
             )
         return cursor.rowcount
 
@@ -743,3 +759,122 @@ class Engine:
                 "INSERT OR IGNORE INTO trail_files(digest,processed_at) VALUES(?,?)",
                 (digest, stamp(now)),
             )
+
+    def record_assurance(
+        self, now: datetime, mode: str, ok: bool, failed_scenarios: int, details: dict
+    ):
+        text(mode, "assurance mode", 32)
+        if type(failed_scenarios) is not int or failed_scenarios < 0:
+            raise ContractError("failed scenario count must be a nonnegative integer")
+        with self.db:
+            self.db.execute(
+                "INSERT INTO assurance_runs(ran_at,mode,ok,failed_scenarios,details) "
+                "VALUES(?,?,?,?,?)",
+                (
+                    stamp(now),
+                    mode,
+                    1 if ok else 0,
+                    failed_scenarios,
+                    canonical(required_dict(details, "assurance details")),
+                ),
+            )
+
+    def assurance_history(self, limit: int = 50) -> list[dict]:
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ContractError("assurance history limit must be 1 to 1000")
+        rows = self.db.execute(
+            "SELECT id,ran_at,mode,ok,failed_scenarios,details FROM assurance_runs "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "id": run_id,
+                "ran_at": ran_at,
+                "mode": mode,
+                "ok": bool(ok),
+                "failed_scenarios": failed,
+                "details": json.loads(details),
+            }
+            for run_id, ran_at, mode, ok, failed, details in rows
+        ]
+
+    def last_assurance(self):
+        history = self.assurance_history(1)
+        return history[0] if history else None
+
+    def prune(self, now: datetime, older_than_days: int) -> dict:
+        if type(older_than_days) is not int or not 1 <= older_than_days <= 3650:
+            raise ContractError("retention days must be 1 to 3650")
+        cutoff = stamp(now - timedelta(days=older_than_days))
+        counts = {}
+        with self.db:
+            counts["alerts"] = self.db.execute(
+                "DELETE FROM alerts WHERE received_at < ?", (cutoff,)
+            ).rowcount
+            counts["outbox"] = self.db.execute(
+                "DELETE FROM outbox WHERE updated_at < ?", (cutoff,)
+            ).rowcount
+            counts["assurance_runs"] = self.db.execute(
+                "DELETE FROM assurance_runs WHERE ran_at < ?", (cutoff,)
+            ).rowcount
+            counts["trail_files"] = self.db.execute(
+                "DELETE FROM trail_files WHERE processed_at < ?", (cutoff,)
+            ).rowcount
+            counts["decisions"] = self.db.execute(
+                "DELETE FROM decisions WHERE created_at IS NOT NULL AND created_at < ?",
+                (cutoff,),
+            ).rowcount
+        return counts
+
+    def backup(self, target) -> str:
+        path = Path(target)
+        if path.is_symlink() or not path.parent.is_dir():
+            raise ContractError(
+                "backup requires an existing trusted directory and a nonsymlink leaf"
+            )
+        if path.exists():
+            raise ContractError("backup target already exists")
+        with self.db:
+            self.db.execute("VACUUM INTO ?", (str(path),))
+        return str(path)
+
+
+def restore_database(source, destination) -> str:
+    """Atomically replace a closed evidence database with a verified backup."""
+    src = Path(source)
+    dst = Path(destination)
+    if src.is_symlink() or not src.is_file():
+        raise ContractError("restore source must be a regular file")
+    if dst.is_symlink() or not dst.parent.is_dir():
+        raise ContractError(
+            "restore requires an existing trusted directory and a nonsymlink leaf"
+        )
+    try:
+        check = sqlite3.connect(str(src))
+        try:
+            tables = {
+                row[0]
+                for row in check.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if not {"alerts", "decisions"} <= tables:
+                raise ContractError("restore source is not a Fool's Gold database")
+        finally:
+            check.close()
+        temporary = dst.with_suffix(dst.suffix + ".restore-tmp")
+        if temporary.exists():
+            temporary.unlink()
+        with src.open("rb") as reader, temporary.open("wb") as writer:
+            while True:
+                chunk = reader.read(1024 * 1024)
+                if not chunk:
+                    break
+                writer.write(chunk)
+            writer.flush()
+            os.fsync(writer.fileno())
+        os.replace(temporary, dst)
+    except sqlite3.Error as exc:
+        raise ContractError("restore source is not a readable database") from exc
+    return str(dst)
