@@ -607,20 +607,43 @@ class Engine:
             "CREATE INDEX IF NOT EXISTS checkpoints_created "
             "ON checkpoints(created_at DESC)"
         )
+        # Initialization must not leave an uncommitted transaction behind.
+        if self.db.in_transaction:
+            self.db.commit()
 
     def _migrate_outbox(self):
-        """Move the pre-destination outbox onto the composite-key schema."""
+        """Move the pre-destination outbox onto the composite-key schema.
+
+        The whole migration is one immediate transaction so an interruption
+        cannot leave a partially renamed table. A pre-existing outbox_v2 is a
+        previous interrupted artifact: the legacy outbox is authoritative and
+        the artifact is rebuilt from it.
+        """
         columns = {
             row[1] for row in self.db.execute("PRAGMA table_info(outbox)")
         }
-        if "destination" not in columns:
+        if "destination" in columns:
+            if self.db.in_transaction:
+                self.db.commit()
+            self.db.execute("DROP TABLE IF EXISTS outbox_v2")
             self.db.execute(
-                "CREATE TABLE outbox_v2 ("
+                "CREATE INDEX IF NOT EXISTS outbox_destination_state "
+                "ON outbox(destination, state)"
+            )
+            return
+        if self.db.in_transaction:
+            self.db.commit()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS outbox_v2 ("
                 "alert_id TEXT NOT NULL, destination TEXT NOT NULL, "
                 "payload_format TEXT NOT NULL, state TEXT NOT NULL, "
                 "attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, "
                 "updated_at TEXT NOT NULL, PRIMARY KEY (alert_id, destination))"
             )
+            # Discard any partial rows from an interrupted attempt.
+            self.db.execute("DELETE FROM outbox_v2")
             self.db.execute(
                 "INSERT INTO outbox_v2(alert_id,destination,payload_format,state,"
                 "attempts,last_error,updated_at) "
@@ -629,10 +652,14 @@ class Engine:
             )
             self.db.execute("DROP TABLE outbox")
             self.db.execute("ALTER TABLE outbox_v2 RENAME TO outbox")
-        self.db.execute(
-            "CREATE INDEX IF NOT EXISTS outbox_destination_state "
-            "ON outbox(destination, state)"
-        )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS outbox_destination_state "
+                "ON outbox(destination, state)"
+            )
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
 
     def close(self):
         try:
