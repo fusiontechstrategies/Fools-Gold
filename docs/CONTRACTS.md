@@ -65,7 +65,9 @@ Alert evidence includes actor/location/actions/outcome, source identity, owner/r
 
 `incidents` clusters alerts per actor whose receipt times are within a configurable gap (default 300 seconds) without merging stored evidence. `bundle` writes alerts and a report into a zip with per-entry SHA-256 values and an HMAC-signed manifest when an evidence key is configured; `verify-bundle` re-checks both.
 
-With `--evidence-key-file` (64 hexadecimal characters = 32 bytes), each stored alert receives an HMAC-SHA256 chained to its predecessor; `verify-integrity` recomputes the chain and reports any tampering. The key must be protected independently of the database.
+With `--evidence-key-file` (64 hexadecimal characters = 32 bytes), each stored alert receives an HMAC-SHA256 chained to its predecessor; `verify-integrity` recomputes the chain and reports any tampering. The key must be protected independently of the database. Pruning signed evidence inserts a signed checkpoint recording the deleted count and the boundary predecessor MAC; verification accepts that boundary only when the checkpoint MAC validates. Full deletion of all evidence is not locally detectable — export or anchor the latest chain head externally.
+
+Evidence bundles contain `alerts.jsonl`, `report.json` and `checkpoints.jsonl` plus a manifest and, when keyed, `manifest.sig`. Verification reports `signature` as `verified`, `unverified` (inspection without a key), `missing` (key supplied but no signature) or `invalid`, together with `authenticated`, `archive_ok` and `source_integrity_ok`. A keyed verification fails closed on a missing or invalid signature; a recorded source-integrity failure is never represented as success.
 
 ## Delivery
 

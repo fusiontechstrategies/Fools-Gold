@@ -17,6 +17,9 @@ All notable changes to Fool's Gold are documented here. The project follows the 
 
 ### Hardened
 
+- Restore validates source SQLite integrity and the complete application schema, checkpoints the destination under an exclusive writer lock, removes stale destination sidecars, and refuses an active database; the single-writer lock is now enforced for file databases.
+- Bundle verification requires signatures whenever a key is supplied, rejects downgraded, manifest-only or count-mismatched bundles, and reports `authenticated`, `archive_ok` and `source_integrity_ok` separately.
+- Retention writes signed checkpoints so pruning old alerts no longer breaks chain verification; unauthorized deletions and tampered checkpoints still fail. Bundles and backups carry the retention boundary.
 - Route filtering applies to delivery batches, not just enqueueing, so one run cannot send another route's pending alerts.
 - Delivery accept Lists Linux audit events and `recon` actions (previously rejected at render time), and flat Wazuh records carry `fg_route` and `fg_mitre`.
 - Dashboard API responses are bounded (`/api/alerts?limit=`, 5000 max) with `nosniff`/`no-store` headers.

@@ -12,7 +12,7 @@ from .core import ContractError, canonical, instant, parse_json, stamp
 
 MAX_ENTRY_BYTES = 32 * 1024 * 1024
 MAX_BUNDLE_BYTES = 128 * 1024 * 1024
-BUNDLE_PAYLOADS = {"alerts.jsonl", "report.json"}
+BUNDLE_PAYLOADS = {"alerts.jsonl", "report.json", "checkpoints.jsonl"}
 BUNDLE_FILES = BUNDLE_PAYLOADS | {"manifest.json", "manifest.sig"}
 MAX_GAP_SECONDS = 86400
 
@@ -81,8 +81,26 @@ def build_bundle(engine, target, now: datetime | None = None) -> str:
         raise ContractError("bundle target already exists")
     alerts = list(engine.export_alerts())
     integrity = engine.verify_integrity() if engine.mac_key is not None else None
+    checkpoints = [
+        {
+            "id": row[0],
+            "created_at": row[1],
+            "pruned_before": row[2],
+            "deleted_alerts": row[3],
+            "boundary_prev_mac": row[4],
+            "first_retained_id": row[5],
+            "mac": row[6],
+        }
+        for row in engine.db.execute(
+            "SELECT id,created_at,pruned_before,deleted_alerts,"
+            "boundary_prev_mac,first_retained_id,mac FROM checkpoints ORDER BY id"
+        )
+    ]
     files = {
         "alerts.jsonl": "".join(canonical(alert) + "\n" for alert in alerts).encode(),
+        "checkpoints.jsonl": "".join(
+            canonical(checkpoint) + "\n" for checkpoint in checkpoints
+        ).encode(),
         "report.json": canonical(
             {
                 "schema_version": 1,
@@ -191,6 +209,15 @@ def verify_bundle(path, mac_key: bytes | None = None) -> dict:
         "integrity",
     }:
         raise ContractError("bundle report has an unexpected shape")
+    try:
+        checkpoint_lines = [
+            line for line in data["checkpoints.jsonl"].splitlines() if line.strip()
+        ]
+        checkpoints = [parse_json(line) for line in checkpoint_lines]
+    except (ContractError, UnicodeError) as exc:
+        raise ContractError("bundle retention checkpoints are invalid") from exc
+    if any(not isinstance(checkpoint, dict) for checkpoint in checkpoints):
+        raise ContractError("bundle retention checkpoints must be objects")
     signature = None
     if "manifest.sig" in data:
         if mac_key is None:

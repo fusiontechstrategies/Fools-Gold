@@ -547,6 +547,12 @@ class Engine:
                 ran_at TEXT NOT NULL, mode TEXT NOT NULL, ok INTEGER NOT NULL,
                 failed_scenarios INTEGER NOT NULL, details TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL, pruned_before TEXT NOT NULL,
+                deleted_alerts INTEGER NOT NULL, boundary_prev_mac TEXT NOT NULL,
+                first_retained_id TEXT, mac TEXT NOT NULL
+            );
         """)
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(alerts)")}
         migrations = {
@@ -737,17 +743,86 @@ class Engine:
         ):
             yield json.loads(evidence)
 
+    def _checkpoint_fields(
+        self,
+        created_at,
+        pruned_before,
+        deleted_alerts,
+        boundary_prev_mac,
+        first_retained_id,
+    ) -> dict:
+        return {
+            "schema_version": 1,
+            "created_at": created_at,
+            "pruned_before": pruned_before,
+            "deleted_alerts": deleted_alerts,
+            "boundary_prev_mac": boundary_prev_mac,
+            "first_retained_id": first_retained_id,
+        }
+
     def verify_integrity(self) -> dict:
-        """Recompute the stored HMAC chain; requires the same evidence key."""
+        """Recompute the stored HMAC chain; requires the same evidence key.
+
+        A signed retention checkpoint may explain a missing predecessor when
+        alerts were pruned deliberately. Unauthorized deletions still show as
+        chain breaks; replacing every alert is not locally detectable.
+        """
         if self.mac_key is None:
             raise ContractError("integrity verification requires an evidence key")
         rows = self.db.execute(
             "SELECT id,evidence,prev_mac,evidence_mac FROM alerts ORDER BY rowid"
         ).fetchall()
+        checkpoints = self.db.execute(
+            "SELECT id,created_at,pruned_before,deleted_alerts,"
+            "boundary_prev_mac,first_retained_id,mac FROM checkpoints ORDER BY id"
+        ).fetchall()
+        boundaries = {}
+        for (
+            checkpoint_id,
+            created_at,
+            pruned_before,
+            deleted_alerts,
+            boundary_prev_mac,
+            first_retained_id,
+            checkpoint_mac,
+        ) in checkpoints:
+            fields = self._checkpoint_fields(
+                created_at,
+                pruned_before,
+                deleted_alerts,
+                boundary_prev_mac,
+                first_retained_id,
+            )
+            expected = hmac.new(
+                self.mac_key, canonical(fields).encode(), hashlib.sha256
+            ).hexdigest()
+            boundaries[boundary_prev_mac] = hmac.compare_digest(
+                expected, checkpoint_mac
+            )
         failures = []
         expected_prev = None
-        for alert_id, evidence, prev_mac, mac in rows:
-            if prev_mac != expected_prev:
+        applied = 0
+        for index, (alert_id, evidence, prev_mac, mac) in enumerate(rows):
+            if index == 0 and prev_mac is not None:
+                # The predecessor was pruned; only a valid signed checkpoint
+                # may authorize that boundary.
+                if prev_mac not in boundaries:
+                    failures.append(
+                        {
+                            "alert_id": alert_id,
+                            "reason": "chain break (no retention checkpoint)",
+                        }
+                    )
+                elif not boundaries[prev_mac]:
+                    failures.append(
+                        {
+                            "alert_id": alert_id,
+                            "reason": "retention checkpoint mac mismatch",
+                        }
+                    )
+                else:
+                    applied += 1
+            elif prev_mac != expected_prev:
                 failures.append({"alert_id": alert_id, "reason": "chain break"})
             if self.evidence_mac(json.loads(evidence), prev_mac) != mac:
                 failures.append({"alert_id": alert_id, "reason": "mac mismatch"})
@@ -756,6 +831,10 @@ class Engine:
             "schema_version": 1,
             "alerts": len(rows),
             "failures": failures,
+            "retention": {
+                "checkpoints": len(checkpoints),
+                "applied": applied,
+            },
             "ok": not failures,
         }
 
@@ -895,6 +974,38 @@ class Engine:
         cutoff = stamp(now - timedelta(days=older_than_days))
         counts = {}
         with self.db:
+            doomed = self.db.execute(
+                "SELECT COUNT(*) FROM alerts WHERE received_at < ?", (cutoff,)
+            ).fetchone()[0]
+            retained = self.db.execute(
+                "SELECT id,prev_mac FROM alerts WHERE received_at >= ? "
+                "ORDER BY rowid LIMIT 1",
+                (cutoff,),
+            ).fetchone()
+            if self.mac_key is not None and doomed:
+                boundary = (retained[1] if retained else None) or ""
+                fields = self._checkpoint_fields(
+                    stamp(now),
+                    cutoff,
+                    doomed,
+                    boundary,
+                    retained[0] if retained else None,
+                )
+                mac = hmac.new(
+                    self.mac_key, canonical(fields).encode(), hashlib.sha256
+                ).hexdigest()
+                self.db.execute(
+                    "INSERT INTO checkpoints(created_at,pruned_before,deleted_alerts,"
+                    "boundary_prev_mac,first_retained_id,mac) VALUES(?,?,?,?,?,?)",
+                    (
+                        fields["created_at"],
+                        cutoff,
+                        doomed,
+                        boundary,
+                        fields["first_retained_id"],
+                        mac,
+                    ),
+                )
             counts["alerts"] = self.db.execute(
                 "DELETE FROM alerts WHERE received_at < ?", (cutoff,)
             ).rowcount
@@ -956,6 +1067,15 @@ RESTORE_TABLES = {
     },
     "trail_files": {"digest", "processed_at"},
     "assurance_runs": {"id", "ran_at", "mode", "ok", "failed_scenarios", "details"},
+    "checkpoints": {
+        "id",
+        "created_at",
+        "pruned_before",
+        "deleted_alerts",
+        "boundary_prev_mac",
+        "first_retained_id",
+        "mac",
+    },
 }
 
 RESTORE_SCHEMA_SQL = {
