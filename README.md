@@ -2,9 +2,12 @@
 
 *Looks valuable. Leaves evidence.*
 
+[![CI](https://github.com/fusiontechstrategies/Fools-Gold/actions/workflows/ci.yml/badge.svg)](https://github.com/fusiontechstrategies/Fools-Gold/actions/workflows/ci.yml)
+[![Security](https://github.com/fusiontechstrategies/Fools-Gold/actions/workflows/security.yml/badge.svg)](https://github.com/fusiontechstrategies/Fools-Gold/actions/workflows/security.yml)
+
 Put harmless bait where an intruder might look. Know when someone touches it. Regularly prove that the resulting alert can reach a person.
 
-Fool's Gold is a private Fusion Technology Strategies project for internal cyber decoys and detection assurance in AWS GovCloud and Windows environments. Its starting point is CISA's September 16, 2026 paper, **Using Cyber Decoys to Strengthen Detection and Response**.
+Fool's Gold is an open-source toolkit from Fusion Technology Strategies for internal cyber decoys and detection assurance in AWS GovCloud and Windows environments. Its starting point is CISA's September 16, 2026 paper, **Using Cyber Decoys to Strengthen Detection and Response**.
 
 ## What works today
 
@@ -77,6 +80,13 @@ Decoy expiration does **not** switch off detection. It raises a maintenance flag
 - [Deployment review packet](docs/DEPLOYMENT-REVIEW.md)
 - [Focused security review](docs/SECURITY-REVIEW-2026-10-02.md)
 
-Placement details, operational telemetry, client information and credentials belong in protected deployment storage. Only synthetic examples belong in this repository. Private visibility is not a substitute for access control.
+Placement details, operational telemetry, client information and credentials belong in protected deployment storage. Only synthetic examples belong in this repository. Public source code is not a substitute for access control on your own deployment data.
 
-Copyright 2026 Fusion Technology Strategies. All rights reserved. No open-source license is granted in this private pilot.
+## Contributing and support
+
+- Report defects and propose changes through [CONTRIBUTING.md](CONTRIBUTING.md).
+- Report suspected security issues privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+Copyright 2026 Fusion Technology Strategies. Released under the [Apache License 2.0](LICENSE).

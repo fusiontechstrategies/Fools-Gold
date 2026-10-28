@@ -2,7 +2,12 @@
 
 import json
 import re
-import xml.etree.ElementTree as ET
+
+# stdlib ElementTree is a deliberate zero-dependency choice. The pre-scan in
+# windows_event_xml rejects DOCTYPE and entity declarations before parsing, so
+# XXE and expansion-bomb payloads never reach expat; tree size and depth are
+# bounded afterwards. See docs/ADAPTERS.md. defusedxml remains test-only.
+import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 
 from .cli import parse_json
 from .core import ContractError, normalize, text

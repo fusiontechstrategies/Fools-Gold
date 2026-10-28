@@ -6,8 +6,22 @@ build-backend = "setuptools.build_meta"
 name = "fools-gold"
 version = "0.1.0"
 description = "Offline cyber decoy detection and assurance pilot"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Fusion Technology Strategies" }]
 requires-python = ">=3.12"
 dependencies = []
+keywords = ["deception", "decoys", "honeypot", "detection", "aws", "govcloud", "windows", "soc", "cloudtrail"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Systems Administration",
+]
 
 [project.scripts]
 fools-gold = "fools_gold.cli:main"

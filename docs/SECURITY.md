@@ -30,4 +30,4 @@
 
 **Offline adapters:** packet rendering is not production delivery. The only HTTP helper uses a fixed loopback address and synthetic token for mock tests. Planned production TLS/auth/rate/outbox controls and their acceptance evidence are documented in [ADAPTERS.md](ADAPTERS.md).
 
-Report issues through the private repository's issue tracker with synthetic reproduction data only. Do not upload operational placements or private telemetry.
+Report suspected security issues privately as described in [SECURITY.md](../SECURITY.md). Use synthetic reproduction data only. Do not upload operational placements or private telemetry.
