@@ -1,6 +1,6 @@
 # Exact deployment review packet
 
-Nothing in `deployment/` is applied automatically. The JSON plan has deployment and production delivery set to false, and the runtime does not read it to enable a sender. Replace placeholders only in protected operator storage.
+Nothing in `deployment/` is applied automatically. The JSON plan has deployment and production delivery set to false, and the runtime does not read it to enable a sender — `deliver` transmits only when the operator runs it with explicit endpoint arguments and a token in `FG_SPLUNK_HEC_TOKEN`. Replace placeholders only in protected operator storage.
 
 ## Proposed footprint
 

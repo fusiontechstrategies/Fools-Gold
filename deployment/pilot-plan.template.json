@@ -11,9 +11,11 @@
   "windows_host": "REPLACE_WITH_APPROVED_HOST",
   "windows_local_decoy_path": "REPLACE_WITH_APPROVED_LOCAL_FILE",
   "collector_log_epoch": "REPLACE_WITH_COLLECTOR_GENERATION_ID",
+  "evidence_hmac_key_secret_reference": null,
   "splunk_hec": {
     "endpoint": null,
     "token_secret_reference": null,
+    "token_environment_variable": "FG_SPLUNK_HEC_TOKEN",
     "token_expires_at": null,
     "ca_trust_reference": null,
     "indexer_ack_required": true,

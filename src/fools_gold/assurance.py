@@ -199,9 +199,7 @@ def run_check(now: datetime | None = None, transport_config: dict | None = None)
                 "synthetic": True,
                 "ok": ok,
                 "scenarios": scenarios,
-                "missed_canary_triggers": sum(
-                    1 for s in scenarios if not s["passed"]
-                ),
+                "failed_scenarios": sum(1 for s in scenarios if not s["passed"]),
                 "decisions": summary["decisions"],
                 "acknowledgment_seconds": summary["acknowledgment_seconds"],
                 "delivery": delivery,

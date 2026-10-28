@@ -12,8 +12,8 @@ The deterministic synthetic exercise produces:
 
 | Metric | Offline result |
 |---|---|
-| Synthetic trigger scenarios | 2 |
-| Missed synthetic triggers | 0 |
+| Canary trigger scenarios | 2 |
+| Failed canary scenarios | 0 |
 | Original alerts | 2 |
 | Retained authorized-access decisions | 1 |
 | Synthetic S3 event-to-local-receipt delay | 5 seconds |

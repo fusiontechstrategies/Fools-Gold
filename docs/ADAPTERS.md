@@ -1,6 +1,6 @@
 # Offline collection and delivery adapters
 
-These adapters make the pilot's boundaries testable before real infrastructure is connected. They do not fetch from AWS, read the Windows Security log, transmit to Wazuh/Splunk, or apply deployment templates.
+These adapters make the pilot's boundaries testable before real infrastructure is connected. Collection reads only operator-managed local sources (exported files, staged CloudTrail logs, the local Windows Security log); delivery transmits only when the operator explicitly runs it with configured endpoints. Nothing fetches from AWS or applies deployment templates.
 
 ## Collection
 

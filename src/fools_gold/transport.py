@@ -140,6 +140,10 @@ def deliver(
         if not batch:
             break
         for alert_id, alert in batch:
+            if sent:
+                # Keep at least SEND_INTERVAL_SECONDS between sends, with no
+                # trailing sleep after the last packet.
+                time.sleep(SEND_INTERVAL_SECONDS)
             packet = (
                 splunk_hec_packet(alert)
                 if payload_format == "splunk"
@@ -182,7 +186,6 @@ def deliver(
             engine.outbox_mark(payload_format, alert_id, "sent", now)
             engine.db.commit()
             sent += 1
-            time.sleep(SEND_INTERVAL_SECONDS)
     return {
         "format": payload_format,
         "sent": sent,

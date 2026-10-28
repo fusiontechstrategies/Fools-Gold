@@ -17,7 +17,7 @@ One approved GovCloud account, one exact synthetic S3 object, one Windows host w
 
 **Windows:** place the synthetic file where the approved scenario can find it. Configure Audit File System and a targeted SACL for the required content access. Verify real provider, channel, SID, object path and access mask. SMB aliases must resolve to the server's exact audited local path; client-visible UNC strings are not interchangeable with that path.
 
-**Wazuh/Splunk:** build an authenticated collector/export mapping, ingest the normalized alert without losing IDs, and route it to the designated analyst. Do not call an adapter operational until a source event is visible in the actual tool and acknowledged through the real case workflow.
+**Wazuh/Splunk:** build an authenticated collector/export mapping, ingest the normalized alert without losing IDs, and route it to the designated analyst. The `deliver` command implements HEC transport and Wazuh localfile delivery, but do not call delivery operational until a source event is visible in the actual tool and acknowledged through the real case workflow.
 
 **Suricata:** add context only after core paths pass. A network alert cannot establish that a local file was read. Keep independent evidence sources and time synchronization.
 

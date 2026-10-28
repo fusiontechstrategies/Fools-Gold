@@ -165,5 +165,50 @@ class CliTrailInboxStreamTests(unittest.TestCase):
             engine.close()
 
 
+class BoundaryValidationTests(unittest.TestCase):
+    def test_query_bounds_are_validated_before_platform_check(self):
+        from fools_gold.winlog import query_security_log
+
+        for kwargs in (
+            {"max_events": 0},
+            {"max_events": 129},
+            {"max_events": True},
+            {"timeout": 0},
+            {"timeout": 31},
+            {"timeout": "10"},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ContractError):
+                query_security_log(**kwargs)
+
+    def test_deliver_limit_zero_is_rejected_via_cli(self):
+        import contextlib
+        import io
+
+        from fools_gold.cli import main
+
+        with tempfile.TemporaryDirectory() as folder:
+            registry_path = Path(folder) / "registry.json"
+            registry_path.write_text(json.dumps(registry()), encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(
+                    [
+                        "--registry",
+                        str(registry_path),
+                        "--database",
+                        str(Path(folder) / "db.sqlite"),
+                        "deliver",
+                        "--format",
+                        "wazuh",
+                        "--wazuh-output",
+                        str(Path(folder) / "out.log"),
+                        "--limit",
+                        "0",
+                    ]
+                )
+            self.assertEqual(code, 2)
+            self.assertIn("1 to 1000", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

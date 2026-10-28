@@ -6,27 +6,31 @@
 flowchart LR
     S[S3 CloudTrail data event export] --> N[Strict normalization]
     W[Windows 4663 collector export] --> N
+    Q[Local wevtutil 4663 query] --> N
+    I[CloudTrail log inbox] --> N
     R[Protected exact-location registry] --> D[Decision engine]
     N --> D
     D --> E[SQLite decision and alert evidence]
     E --> A[Local analyst acknowledgment]
     D --> J[Decision JSONL]
-    J -. planned transport .-> SIEM[Wazuh or Splunk]
-    T[Synthetic assurance scenarios] --> N
+    E --> O[Operator-configured delivery outbox]
+    O --> SIEM[Wazuh localfile or Splunk HEC]
+    T[Synthetic canary check] --> N
 ```
 
-The solid paths run locally today. The SIEM transport is a future deployment component. Suricata can later supply surrounding network context; it is not the source of truth for an S3 read or local Windows file read.
+The registry, decision engine and evidence store run locally. The wevtutil query and trail inbox read only operator-local sources; delivery runs only when the operator explicitly configures an endpoint. No command fetches from AWS, and Suricata can later supply surrounding network context — it is not the source of truth for an S3 read or local Windows file read.
 
-Offline Windows XML/CloudTrail export conversion and Wazuh/Splunk payload rendering now sit around this path. The only HTTP helper targets a synthetic loopback receiver. Production collection/transport is still absent. Retained alerts can be exported again after a failed output operation without changing delivery or acknowledgment state.
+Offline Windows XML/CloudTrail export conversion, Wazuh/Splunk payload rendering, live local collection and durable delivery now sit around this path. Real TLS trust, SIEM ingestion and analyst workflow acceptance remain deployment tasks. Retained alerts can be exported again after a failed output operation without changing delivery or acknowledgment state.
 
 ## Trust boundaries
 
 1. **Decoy workload:** synthetic content only. No live passwords, keys, customer records or external callback links.
-2. **Telemetry collector:** the trusted collector obtains real CloudTrail or Security events. Input fields alone do not prove provenance. Production needs controlled collection, authenticated transport and source retention.
+2. **Telemetry collectors:** trusted collectors obtain real CloudTrail or Security events; the local wevtutil query and the trail inbox read only operator-managed sources. Input fields alone do not prove provenance. Production needs controlled collection, authenticated transport and source retention.
 3. **Registry:** exact placements and exceptions are security configuration. Protect them from monitored workloads. The CLI consumes a local, operator-selected registry; events cannot choose its filename.
 4. **Decision engine:** bounded JSONL, supported contracts and parameterized SQLite statements. No event field is executed, opened as a file or used in a network request.
-5. **Evidence:** local SQLite retains decisions and normalized alert details. Hashes are comparison aids, not signed evidence. Production needs protected ACLs, encryption, retention and independent integrity controls.
-6. **Analyst:** acknowledgment is an explicit local operator action, not containment, case closure or proof that an analyst saw a SIEM alert.
+5. **Evidence:** local SQLite retains decisions and normalized alert details, optionally HMAC-chained under an external key. Production needs protected ACLs, encryption, retention and independent integrity controls.
+6. **Delivery:** runs only on explicit operator command with operator-selected endpoints; TLS verification is not bypassable and tokens come only from the environment. Endpoint arguments appear in command history — protect it.
+7. **Analyst:** acknowledgment is an explicit local operator action, not containment, case closure or proof that an analyst saw a SIEM alert.
 
 ## Correlation and lifecycle
 

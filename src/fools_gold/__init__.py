@@ -1,1 +1,1 @@
-"""Fool's Gold: synthetic offline decoy detection pilot."""
+"""Fool's Gold: decoy detection and detection-assurance toolkit for GovCloud and Windows."""
