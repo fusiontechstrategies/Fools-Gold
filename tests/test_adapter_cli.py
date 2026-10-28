@@ -122,3 +122,7 @@ class AdapterCliTests(unittest.TestCase):
         terraform = (root / "deployment/terraform/main.tf").read_text(encoding="utf-8")
         self.assertIn("NOT APPLIED", terraform.upper())
         self.assertNotIn("access_key", terraform)
+        # Listings are captured as bucket-level data events, not management
+        # selectors with unsupported eventName/ARN filtering.
+        self.assertIn("AWS::S3::Bucket", terraform)
+        self.assertNotIn('equals = ["Management"]', terraform)

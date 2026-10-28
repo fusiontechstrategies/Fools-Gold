@@ -88,13 +88,35 @@ class S3OperationTests(unittest.TestCase):
         self.assertEqual(result["decoy_id"], "synthetic-s3-backup")
         self.assertEqual(result["alert"]["event"]["actions"], ["recon"])
 
+    def test_bucket_listing_is_accepted_as_data_or_management(self):
+        for category in ("Data", "Management"):
+            with self.subTest(category=category):
+                event = normalize(list_event(category=category))
+                self.assertEqual(event["actions"], ["recon"])
+                self.assertTrue(event["prefix_match"])
+
     def test_bucket_listing_with_unrelated_prefix_is_unmatched(self):
         raw = list_event(prefix="other/")
         self.assertEqual(self.engine.process(raw, NOW)["decision"], "unmatched")
 
-    def test_bucket_listing_requires_management_category(self):
+    def test_bucket_listing_rejects_unknown_category(self):
         with self.assertRaises(ContractError):
-            normalize(list_event(category="Data"))
+            normalize(list_event(category="Insight"))
+
+    def test_versioned_read_carries_the_version_id(self):
+        raw = s3_variant(
+            eventName="GetObject",
+            eventID="synthetic-versioned-001",
+            requestParameters={
+                "bucketName": "synthetic-decoy-bucket",
+                "key": "backups/inventory.txt",
+                "versionId": "synthetic-version-1",
+            },
+        )
+        event = normalize(raw)
+        self.assertEqual(event["actions"], ["read"])
+        self.assertEqual(event["context"]["version_id"], "synthetic-version-1")
+        self.assertNotIn("version_id", normalize(s3())["context"])
 
     def test_batch_delete_remains_unsupported(self):
         with self.assertRaises(ContractError):

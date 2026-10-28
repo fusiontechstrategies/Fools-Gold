@@ -25,7 +25,7 @@ Exceptions match the exact reported principal, never a username substring or ARN
 
 ## S3 input
 
-One complete exported CloudTrail event per JSONL line, not an AWS `Records` envelope. Object operations require `eventCategory=Data`: `GetObject`, `GetObjectVersion`, `HeadObject` (recon), `PutObject`, `CopyObject` (destination write), `DeleteObject`. Bucket listings `ListObjects`/`ListObjectsV2` require `eventCategory=Management` and match registered decoys by bucket/prefix (`arn:aws-us-gov:s3:::bucket/prefix`). All in `us-gov-east-1` or `us-gov-west-1`, with `eventSource=s3.amazonaws.com`.
+One complete exported CloudTrail event per JSONL line, not an AWS `Records` envelope. Object operations require `eventCategory=Data`: `GetObject` (including versioned reads, which carry `requestParameters.versionId` into `context.version_id`), `GetObjectVersion`, `HeadObject` (recon), `PutObject`, `CopyObject` (destination write), `DeleteObject`. Bucket listings `ListObjects`/`ListObjectsV2` match registered decoys by bucket/prefix (`arn:aws-us-gov:s3:::bucket/prefix`) and are accepted as `eventCategory=Data` (the documented bucket-level data-event form) or `Management` for older trails. All in `us-gov-east-1` or `us-gov-west-1`, with `eventSource=s3.amazonaws.com`.
 
 Required fields: recipient account, region, request bucket/key (or bucket/prefix for listings), exactly matching object resource ARN for object operations, principal ARN, event ID/time and source address. Object and principal ARNs use `aws-us-gov`. Keys are not percent-decoded and missing ARNs are not invented. `CopyObject` reports the destination write only; copies *from* a decoy to another location are not independently represented. Review collector transformations against actual exports.
 

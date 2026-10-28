@@ -310,10 +310,11 @@ def normalize(raw: dict) -> dict:
     actions, prefix_match = S3_OPERATIONS[operation]
     category = raw.get("eventCategory")
     if prefix_match:
-        # Bucket listings are management events; they reveal recon of the prefix.
-        if category != "Management":
+        # AWS documents listing activity as data events for bucket-level
+        # resources; older trails may still surface it as management activity.
+        if category not in ("Data", "Management"):
             raise ContractError(
-                f"{operation} requires eventCategory Management"
+                f"{operation} requires eventCategory Data or Management"
             )
     elif category != "Data":
         raise ContractError("S3 object operations require eventCategory Data")
@@ -325,6 +326,9 @@ def normalize(raw: dict) -> dict:
         raise ContractError("recipient account must contain 12 digits")
     params = required_dict(raw.get("requestParameters"), "request parameters")
     bucket = text(params.get("bucketName"), "bucket", 63)
+    context = {
+        "source_ip": text(raw.get("sourceIPAddress"), "source address", 256)
+    }
     if prefix_match:
         prefix = params.get("prefix", "")
         if not isinstance(prefix, str) or len(prefix) > 1024:
@@ -335,6 +339,10 @@ def normalize(raw: dict) -> dict:
     else:
         key = text(params.get("key"), "key", 1024)
         arn = f"arn:aws-us-gov:s3:::{bucket}/{key}"
+        if "versionId" in params:
+            context["version_id"] = text(
+                params["versionId"], "version id", 256
+            )
         resources = raw.get("resources")
         if not isinstance(resources, list) or not any(
             isinstance(r, dict)
@@ -360,9 +368,7 @@ def normalize(raw: dict) -> dict:
         "locator": {"account": account, "region": region, "arn": arn},
         "actions": actions,
         "outcome": "denied" if raw.get("errorCode") else "success",
-        "context": {
-            "source_ip": text(raw.get("sourceIPAddress"), "source address", 256)
-        },
+        "context": context,
     }
     if prefix_match:
         event["prefix_match"] = True

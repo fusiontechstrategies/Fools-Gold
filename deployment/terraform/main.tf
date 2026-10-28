@@ -96,15 +96,19 @@ resource "aws_cloudtrail" "decoy" {
     }
   }
 
+  # Bucket-level S3 data events cover listing activity (ListObjects,
+  # ListObjectsV2) and are selected by bucket resource type and ARN. This is
+  # the documented way to capture recon; management selectors do not support
+  # the same eventName/resource-ARN filtering shape.
   advanced_event_selector {
-    name = "Fools Gold decoy bucket listings"
+    name = "Fools Gold decoy bucket-level data events"
     field_selector {
       field  = "eventCategory"
-      equals = ["Management"]
+      equals = ["Data"]
     }
     field_selector {
-      field  = "eventName"
-      equals = ["ListObjects", "ListObjectsV2"]
+      field  = "resources.type"
+      equals = ["AWS::S3::Bucket"]
     }
     field_selector {
       field  = "resources.ARN"
