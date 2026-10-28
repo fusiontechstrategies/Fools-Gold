@@ -81,22 +81,62 @@ def _transport_config(args, command):
 
 
 def run_windows_collector(
-    registry: Registry, *, log_epoch, follow, interval_seconds, max_events
+    registry: Registry,
+    *,
+    log_epoch,
+    follow,
+    interval_seconds,
+    max_events,
+    state_file=None,
+    pages_per_cycle=10,
+    fetch=None,
 ):
-    from .winlog import collect
+    from .winlog import collect, load_state, save_state
 
+    if type(pages_per_cycle) is not int or not 1 <= pages_per_cycle <= 50:
+        raise ContractError("--pages-per-cycle must be 1 to 50")
+    state = load_state(state_file) if state_file else {}
+    if state_file and state.get("log_epoch") not in (None, log_epoch):
+        print(
+            "Fool's Gold collector: log epoch changed; restarting from the "
+            "newest event",
+            file=sys.stderr,
+        )
+        state = {"log_epoch": log_epoch, "last_record_id": None}
     try:
         while True:
-            events, skipped = collect(
-                registry, log_epoch=log_epoch, max_events=max_events
-            )
-            for event in events:
-                print(canonical(event))
-            if skipped:
-                print(
-                    f"Fool's Gold collector: skipped {skipped} non-contract event(s)",
-                    file=sys.stderr,
+            since = state.get("last_record_id")
+            for _ in range(pages_per_cycle):
+                events, report = collect(
+                    registry,
+                    log_epoch=log_epoch,
+                    fetch=fetch,
+                    max_events=max_events,
+                    since_record_id=since,
                 )
+                for event in events:
+                    print(canonical(event))
+                if report["skipped"]:
+                    print(
+                        "Fool's Gold collector: skipped "
+                        f"{report['skipped']} unsupported event(s)",
+                        file=sys.stderr,
+                    )
+                if report["rolled_over"]:
+                    print(
+                        "Fool's Gold collector: coverage gap - log rollover "
+                        f"detected (cursor {since}, observed "
+                        f"{report['observed_min']})",
+                        file=sys.stderr,
+                    )
+                    since = 0
+                else:
+                    since = report["next_since"]
+                state = {"log_epoch": log_epoch, "last_record_id": since}
+                if state_file:
+                    save_state(state_file, state)
+                if report["fetched"] < max_events and not report["rolled_over"]:
+                    break
             if not follow:
                 return 0
             time.sleep(interval_seconds)
@@ -202,6 +242,13 @@ def main(argv=None):
     )
     collector.add_argument(
         "--max-events", type=int, default=128, help="Maximum events per query"
+    )
+    collector.add_argument(
+        "--state-file",
+        help="Durable EventRecordID cursor file for restart recovery",
+    )
+    collector.add_argument(
+        "--pages-per-cycle", type=int, default=10, help="Bounded catch-up pages"
     )
     ack = commands.add_parser(
         "acknowledge", help="Record a local analyst acknowledgment"
@@ -331,6 +378,8 @@ def main(argv=None):
                 follow=args.follow,
                 interval_seconds=args.interval_seconds,
                 max_events=args.max_events,
+                state_file=args.state_file,
+                pages_per_cycle=args.pages_per_cycle,
             )
         if args.command == "restore":
             if not args.database:

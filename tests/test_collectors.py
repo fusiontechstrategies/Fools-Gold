@@ -46,26 +46,26 @@ class WindowsEnvelopeTests(unittest.TestCase):
                 windows_events_xml_envelope(payload, log_epoch="collector-epoch")
 
     def test_collect_emits_only_registered_decoy_locations(self):
-        events, skipped = collect(
+        events, report = collect(
             Registry(registry()),
             log_epoch="collector-epoch",
-            fetch=lambda max_events: envelope(WINDOWS_XML, UNMATCHED_XML),
+            fetch=lambda **_kwargs: envelope(WINDOWS_XML, UNMATCHED_XML),
         )
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["object_name"], "C:\\SyntheticDecoys\\config-export.txt")
-        self.assertEqual(skipped, 0)
+        self.assertEqual(report["skipped"], 0)
 
     def test_collect_skips_contract_failures_with_a_visible_count(self):
         broken = WINDOWS_XML.replace(
             b'<Data Name="AccessMask">0x1</Data>', b'<Data Name="AccessMask">0x80</Data>'
         )
-        events, skipped = collect(
+        events, report = collect(
             Registry(registry()),
             log_epoch="collector-epoch",
-            fetch=lambda max_events: envelope(broken),
+            fetch=lambda **_kwargs: envelope(broken),
         )
         self.assertEqual(events, [])
-        self.assertEqual(skipped, 1)
+        self.assertEqual(report["skipped"], 1)
 
     def test_query_requires_windows(self):
         import fools_gold.winlog as winlog

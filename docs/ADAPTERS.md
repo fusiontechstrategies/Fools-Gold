@@ -41,6 +41,10 @@ python -m fools_gold --registry examples/registry.synthetic.json --database runt
 
 `--follow --interval-seconds N` (1–3600) repeats the query until interrupted; `--max-events` caps each query at 128. The command needs only `--registry`.
 
+Collector output is normalized before parsing: an empty result, a single Event, several concatenated Event roots (what wevtutil commonly emits) and a namespaced or bare `Events` envelope are all accepted; UTF-16 output is decoded. Malformed envelopes still fail closed, but an unsupported individual record (for example an ordinary successful 4656) is skipped and counted rather than aborting the batch.
+
+Paging is oldest-first from a durable `EventRecordID` cursor. Pass `--state-file PATH` to persist the cursor atomically across restarts; `--pages-per-cycle N` (1–50) bounds catch-up work per cycle so bursts larger than one batch are drained over several pages. If a cursor query returns nothing and the newest records have ids at or below the stored cursor, the collector reports a coverage gap on stderr (log cleared or rolled over) and restarts from the oldest record. A changed `--log-epoch` also restarts the cursor with a visible notice. Changing audit policy is never automatic.
+
 ### CloudTrail log inbox
 
 `fools_gold.trail_inbox.cloudtrail_records_file` processes one CloudTrail log file that already landed in an operator-managed directory (fetching from S3 stays a credential-scoped deployment concern, such as a sync job). Bounds: 16 MiB per file, 10,000 records, 64 KiB per record, bounded gzip decompression. The `trail-inbox` command skips files already processed by SHA-256 digest; a file with malformed records stays unmarked so it can be corrected and retried, while deduplication keeps earlier decisions safe.

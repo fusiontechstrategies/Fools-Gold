@@ -144,34 +144,96 @@ def windows_event_xml(payload: bytes, *, log_epoch: str) -> dict:
     return mapped
 
 
-def windows_events_xml_envelope(payload: bytes, *, log_epoch: str, max_events=MAX_ENVELOPE_EVENTS) -> list[dict]:
-    """Map a bounded wevtutil XML query result (Events envelope) into contract events.
+EVENT_DECLARATION = re.compile(r"<\?xml[^>]*\?>", re.IGNORECASE)
+EVENTS_ROOT = re.compile(r"^<Events(?:\s|>)", re.IGNORECASE)
 
-    The query is fixed collector configuration; envelope content is still
-    treated as untrusted input with the same hardening as single exports.
+
+def normalize_events_payload(payload: bytes) -> bytes:
+    """Accept wevtutil output with or without an Events wrapper.
+
+    Real wevtutil results can be empty, a single Event, several concatenated
+    Event roots (producing multiple XML roots), or an Events envelope. XML
+    declarations are stripped and an envelope is added when needed. Structural
+    rejection still happens in the hardened parser afterwards.
     """
-    text(log_epoch, "collector log epoch", 128)
-    if type(max_events) is not int or not 1 <= max_events <= MAX_ENVELOPE_EVENTS:
-        raise ContractError("envelope event limit must be 1 to 128")
-    if not isinstance(payload, bytes) or not 0 < len(payload) <= MAX_ENVELOPE_BYTES:
+    if not isinstance(payload, bytes) or len(payload) > MAX_ENVELOPE_BYTES:
         raise ContractError("Windows XML envelope must be bytes of at most 1 MiB")
     try:
         content = payload.decode("utf-8-sig")
     except UnicodeError as exc:
         raise ContractError("Windows XML envelope must be UTF-8") from exc
-    root = _hardened_xml(content)
+    content = EVENT_DECLARATION.sub("", content).strip()
+    if not content:
+        return f'<Events xmlns="{EVENT_NS}"></Events>'.encode()
+    if EVENTS_ROOT.match(content):
+        if "xmlns" not in content.split(">", 1)[0]:
+            content = content.replace(
+                "<Events", f'<Events xmlns="{EVENT_NS}"', 1
+            )
+        normalized = content
+    else:
+        normalized = f'<Events xmlns="{EVENT_NS}">{content}</Events>'
+    encoded = normalized.encode()
+    if len(encoded) > MAX_ENVELOPE_BYTES + 256:
+        raise ContractError("Windows XML envelope exceeds bounds")
+    return encoded
+
+
+def windows_events_batch(
+    payload: bytes, *, log_epoch: str, max_events=MAX_ENVELOPE_EVENTS
+):
+    """Map a bounded query result, skipping unsupported individual events.
+
+    A malformed envelope still fails closed; individual contract violations
+    (for example an ordinary successful 4656) are counted and skipped so they
+    cannot abort a batch of valid events.
+
+    Returns (mapped_events, skipped, observed_record_ids, total_events).
+    """
+    text(log_epoch, "collector log epoch", 128)
+    if type(max_events) is not int or not 1 <= max_events <= MAX_ENVELOPE_EVENTS:
+        raise ContractError("envelope event limit must be 1 to 128")
+    normalized = normalize_events_payload(payload)
+    root = _hardened_xml(normalized.decode("utf-8"))
     prefix = "{" + EVENT_NS + "}"
     if root.tag != prefix + "Events":
         raise ContractError("unexpected Windows Events envelope namespace")
+    if root.text and root.text.strip():
+        raise ContractError("unexpected text in Windows Events envelope")
     events = [child for child in root if child.tag == prefix + "Event"]
     if len(events) > max_events:
         raise ContractError("Windows XML envelope exceeds the event limit")
     if len(root) != len(events):
         raise ContractError("unexpected Windows Events envelope child")
-    mapped_events = []
+    mapped_events, skipped, observed = [], 0, []
     for event in events:
-        _bounded_element(event)
-        mapped_events.append(_mapped_from_event_element(event, log_epoch))
+        record = None
+        try:
+            _bounded_element(event)
+            system = event.find(prefix + "System")
+            if system is not None:
+                identifier = system.find(prefix + "EventRecordID")
+                if (
+                    identifier is not None
+                    and identifier.text
+                    and identifier.text.isdecimal()
+                ):
+                    record = int(identifier.text)
+            mapped_events.append(_mapped_from_event_element(event, log_epoch))
+        except ContractError:
+            skipped += 1
+        if record is not None:
+            observed.append(record)
+    return mapped_events, skipped, observed, len(events)
+
+
+def windows_events_xml_envelope(payload: bytes, *, log_epoch: str, max_events=MAX_ENVELOPE_EVENTS) -> list[dict]:
+    """Strict envelope mapping: any unsupported event fails the whole batch."""
+    mapped_events, skipped, _, _ = windows_events_batch(
+        payload, log_epoch=log_epoch, max_events=max_events
+    )
+    if skipped:
+        raise ContractError("Windows XML contains an unsupported event")
     return mapped_events
 
 

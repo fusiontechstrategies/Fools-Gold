@@ -17,6 +17,7 @@ All notable changes to Fool's Gold are documented here. The project follows the 
 
 ### Hardened
 
+- Windows collection now aligns with real wevtutil output (empty, concatenated Event roots, wrapped/unwrapped, UTF-16), skips unsupported individual records without aborting a batch, pages oldest-first from a durable cursor with bounded catch-up, and reports log rollover/coverage gaps. State loading validates stored timestamps.
 - Restore validates source SQLite integrity and the complete application schema, checkpoints the destination under an exclusive writer lock, removes stale destination sidecars, and refuses an active database; the single-writer lock is now enforced for file databases.
 - Bundle verification requires signatures whenever a key is supplied, rejects downgraded, manifest-only or count-mismatched bundles, and reports `authenticated`, `archive_ok` and `source_integrity_ok` separately.
 - Retention writes signed checkpoints so pruning old alerts no longer breaks chain verification; unauthorized deletions and tampered checkpoints still fail. Bundles and backups carry the retention boundary.
