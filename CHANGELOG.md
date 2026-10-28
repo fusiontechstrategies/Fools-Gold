@@ -21,12 +21,23 @@ All notable changes to Fool's Gold are documented here. The project follows the 
 - Named destinations (`destination add/list`) and explicit route mappings (`route map/list`); the outbox is keyed per destination so retries, failure resets, status and completion reporting are scoped, with a tested migration from the legacy format-keyed outbox.
 - The dashboard is browser-usable: login form with short-lived HttpOnly session cookies, CSRF-protected acknowledgment, alert filters (search/source/decoy/route/ack), stable pagination, alert detail with event/receipt/delivery/acknowledgment times, incidents view and summary cards, while the bearer API and metrics endpoint remain available.
 
+### Stabilized
+
+- Outbox migration is one committed transaction, recovers interrupted artifacts, and tolerates concurrent first starts.
+- Locking is per-transaction (`BEGIN IMMEDIATE` + writer lock) with lifetime session markers, so the dashboard, ingestion, delivery and live assurance coexist; restore remains exclusive.
+- Signed chains reject keyless or wrongly keyed ingestion and destructive retention before changing anything; keyless inspection and acknowledgment still work.
+- Live assurance requires a current source event and matching read action, records per-decoy evidence, and refuses stale delayed events.
+- Windows collection treats idle polls as idle (not rollover) and adds a log-generation identity so record-id reuse after a clear cannot collide.
+- Route mappings are enforced in enqueue/delivery; retries, resets and completion reporting are scoped per destination and route.
+- The scheduled Windows workflow spools collection output, ingests with checked exit codes, archives successes and retries failures across restarts.
+- CI builds and independently installs both wheel and sdist in clean environments, runs the real console entry point from outside the checkout, and verifies metadata, `check` and `demo`.
+
 ### Hardened
 
 - Wazuh file delivery now routes open/write/fsync/zero-progress failures through the durable outbox failure path, completes short writes, closes descriptors reliably, and documents at-least-once duplicate ambiguity instead of claiming exactly-once delivery.
 - S3 listings are accepted as documented bucket-level data events (Management retained for older trails), versioned reads carry `context.version_id`, and the Terraform selector now uses a valid bucket-level data-event selector instead of unsupported management-event filtering.
 - Windows collection now aligns with real wevtutil output (empty, concatenated Event roots, wrapped/unwrapped, UTF-16), skips unsupported individual records without aborting a batch, pages oldest-first from a durable cursor with bounded catch-up, and reports log rollover/coverage gaps. State loading validates stored timestamps.
-- Restore validates source SQLite integrity and the complete application schema, checkpoints the destination under an exclusive writer lock, removes stale destination sidecars, and refuses an active database; the single-writer lock is now enforced for file databases.
+- Restore validates source SQLite integrity and the complete application schema, checkpoints the destination under an exclusive session/writer lock, removes stale destination sidecars, and refuses an active database.
 - Bundle verification requires signatures whenever a key is supplied, rejects downgraded, manifest-only or count-mismatched bundles, and reports `authenticated`, `archive_ok` and `source_integrity_ok` separately.
 - Retention writes signed checkpoints so pruning old alerts no longer breaks chain verification; unauthorized deletions and tampered checkpoints still fail. Bundles and backups carry the retention boundary.
 - Route filtering applies to delivery batches, not just enqueueing, so one run cannot send another route's pending alerts.

@@ -36,7 +36,7 @@ jobs:
       # Ruff is a verification tool, not a project dependency; it is pinned but
       # intentionally not hash-locked because it never ships with the package.
       - name: Install verification tools
-        run: python -m pip install ruff==0.17.2 build
+        run: python -m pip install ruff==0.17.2
       - name: Lint
         run: ruff check .
   package:
@@ -49,26 +49,52 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      - name: Install verification tools
+      - name: Install build tooling
         run: python -m pip install build
-
       - name: Build wheel and source distribution
+        shell: bash
         run: python -m build --outdir "$RUNNER_TEMP/dist"
-
-      - name: Install the built wheel outside the repository
+      - name: Wheel install smoke test outside the checkout
         shell: bash
         run: |
-          python -m venv "$RUNNER_TEMP/venv"
-          if [ -f "$RUNNER_TEMP/venv/Scripts/python.exe" ]; then
-            PY="$RUNNER_TEMP/venv/Scripts/python.exe"
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv-wheel"
+          if [ -d "$RUNNER_TEMP/venv-wheel/Scripts" ]; then
+            BIN="$RUNNER_TEMP/venv-wheel/Scripts"
+            PY="$BIN/python.exe"
           else
-            PY="$RUNNER_TEMP/venv/bin/python"
+            BIN="$RUNNER_TEMP/venv-wheel/bin"
+            PY="$BIN/python"
           fi
-          "$PY" -m pip install --no-index --find-links "$RUNNER_TEMP/dist" fools-gold
-          "$PY" -c "import shutil,sys; assert shutil.which('fools-gold'), 'console entry point missing'"
+          "$PY" -m pip install --no-index "$RUNNER_TEMP"/dist/*.whl
+          export PATH="$BIN:$PATH"
+          "$BIN/fools-gold" --help > /dev/null
+          "$PY" -c "import shutil; assert shutil.which('fools-gold'), 'entry point not on PATH'"
           "$PY" -c "from importlib.metadata import version; assert version('fools-gold') == '0.3.0'"
-          "$PY" -m fools_gold --help > /dev/null
+          cd "$RUNNER_TEMP"
           "$PY" -m fools_gold check > /dev/null
-          "$PY" -m fools_gold demo --out "$RUNNER_TEMP/fg-demo" > /dev/null
-          test -f "$RUNNER_TEMP/fg-demo/report.html"
-          test -f "$RUNNER_TEMP/fg-demo/evidence.sqlite"
+          "$PY" -m fools_gold demo --out "$RUNNER_TEMP/demo-wheel" > /dev/null
+          test -f "$RUNNER_TEMP/demo-wheel/report.html"
+          test -f "$RUNNER_TEMP/demo-wheel/evidence.sqlite"
+      - name: Source distribution install smoke test outside the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv-sdist"
+          if [ -d "$RUNNER_TEMP/venv-sdist/Scripts" ]; then
+            BIN="$RUNNER_TEMP/venv-sdist/Scripts"
+            PY="$BIN/python.exe"
+          else
+            BIN="$RUNNER_TEMP/venv-sdist/bin"
+            PY="$BIN/python"
+          fi
+          "$PY" -m pip install "$RUNNER_TEMP"/dist/*.tar.gz
+          export PATH="$BIN:$PATH"
+          "$BIN/fools-gold" --help > /dev/null
+          "$PY" -c "import shutil; assert shutil.which('fools-gold'), 'entry point not on PATH'"
+          "$PY" -c "from importlib.metadata import version; assert version('fools-gold') == '0.3.0'"
+          cd "$RUNNER_TEMP"
+          "$PY" -m fools_gold check > /dev/null
+          "$PY" -m fools_gold demo --out "$RUNNER_TEMP/demo-sdist" > /dev/null
+          test -f "$RUNNER_TEMP/demo-sdist/report.html"
+          test -f "$RUNNER_TEMP/demo-sdist/evidence.sqlite"

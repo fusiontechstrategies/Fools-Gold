@@ -32,8 +32,10 @@ Decoy content is watermarked synthetic data; never place working credentials.
 ## 4. Configure collection
 
 - Windows: enable file auditing and a SACL on the decoy path, then register the
-  scheduled collector (`deployment/windows/register-collector.ps1`) or run
-  `collect-windows --follow --state-file ...` under your supervisor.
+  scheduled workflow (`deployment/windows/register-collector.ps1`), which
+  collects into a durable spool, ingests with checked exit codes, archives
+  successful spools and retries failures after a restart. It does not create
+  the state file (the collector writes it) and never changes audit policy.
 - CloudTrail: stage log files into a protected inbox directory (for example a
   credential-scoped sync job) and schedule
   `python -m fools_gold ... trail-inbox <inbox>` (see

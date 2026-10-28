@@ -74,7 +74,7 @@ def dashboard(engine):
 def api_get(base, path):
     request = urllib.request.Request(base + path)
     request.add_header("Authorization", f"Bearer {TOKEN}")
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=10) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         return json.loads(response.read())
 
 
@@ -155,7 +155,7 @@ class DashboardIngestionTests(unittest.TestCase):
                     )
                     request.add_header("Content-Type", "application/json")
                     request.add_header("Authorization", f"Bearer {TOKEN}")
-                    with urllib.request.urlopen(request, timeout=20) as response:
+                    with urllib.request.urlopen(request, timeout=20) as response:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
                         self.assertEqual(response.status, 200)
                     _, stderr = writer.communicate(timeout=60)
                     self.assertEqual(writer.returncode, 0, stderr)
