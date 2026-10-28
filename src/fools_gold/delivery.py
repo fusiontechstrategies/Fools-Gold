@@ -7,8 +7,7 @@ import http.client
 import json
 import re
 
-from .cli import parse_json
-from .core import ContractError, instant, required_dict, text
+from .core import ContractError, instant, parse_json, required_dict, text
 
 MAX_PACKET_BYTES = 65536
 

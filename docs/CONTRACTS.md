@@ -50,10 +50,16 @@ The offline XML and CloudTrail export converters are documented in [ADAPTERS.md]
 
 ## Decisions and evidence
 
-Each accepted source event yields `alert`, `expected_access`, `unmatched` or `duplicate`. Malformed/unsupported records print `rejected` and make ingestion exit with status 2. Oversized records stop ingestion, preserving earlier committed decisions.
+Each accepted source event yields `alert`, `expected_access`, `unmatched` or `duplicate`. Malformed/unsupported records print `rejected` and make ingestion exit with status 2. Oversized records stop ingestion, preserving earlier committed decisions. `trail-inbox` applies the same rule per file and skips files whose SHA-256 digest was already processed.
 
 Alert evidence includes actor/location/actions/outcome, source identity, owner/runbook, receipt time, telemetry delay, expiry flag, registry/raw-event hashes and optional related alert. Original raw records remain in source storage; this tool retains their digest and normalized fields.
 
-Output is JSONL. A future Wazuh/Splunk transport must preserve `decision=alert` and the nested alert, while routing rejections and expected access separately. Printing a record is not proof of SIEM delivery.
+With `--evidence-key-file` (64 hexadecimal characters = 32 bytes), each stored alert receives an HMAC-SHA256 chained to its predecessor; `verify-integrity` recomputes the chain and reports any tampering. The key must be protected independently of the database.
+
+## Delivery
+
+`deliver --format splunk --splunk-host H --splunk-port P` sends rendered HEC packets over verified HTTPS using `FG_SPLUNK_HEC_TOKEN` from the environment; `deliver --format wazuh --wazuh-output PATH` appends rendered records to a local protected file. Every retained alert is enqueued per format exactly once; the outbox records state and per-attempt errors, `--retry-failed` requeues failures. Delivery success is transport-level only and never touches acknowledgment.
+
+Output is JSONL. A Wazuh/Splunk transport must preserve `decision=alert` and the nested alert, while routing rejections and expected access separately. Printing a record is not proof of SIEM delivery.
 
 Acknowledgment is an operator-supplied name and time, not authenticated identity. Protect command access/database and use an authenticated case workflow in production.

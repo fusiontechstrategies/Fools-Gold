@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fools-gold"
-version = "0.1.0"
+version = "0.2.0"
 description = "Offline cyber decoy detection and assurance pilot"
 readme = "README.md"
 license = "Apache-2.0"

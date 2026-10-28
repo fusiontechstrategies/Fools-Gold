@@ -9,6 +9,9 @@
 - JSON nesting is limited to 32 levels/100,000 value nodes. The offline Windows XML adapter forbids DTD/entities and enforces input/tree/field bounds.
 - Persistent replay detection and rejection of changed evidence under an existing source ID.
 - Separate original decisions for correlated activity.
+- Optional HMAC-SHA256 evidence chain (`--evidence-key-file`) with `verify-integrity` tamper detection.
+- Durable delivery outbox with bounded attempts, verified TLS, no redirect following and fixed HEC path.
+- Bounded Windows Security query envelope parsing and gzip-bomb-resistant CloudTrail inbox processing.
 
 ## Limits an operator must understand
 
@@ -18,7 +21,13 @@
 
 **Permissions:** new POSIX CLI runtime files use restrictive umask. Windows ACLs are not configured automatically. Choose a trusted protected directory, do not allow other principals to replace parent directories/DB files, and protect SQLite sidecar files. The CLI leaf-symlink check is not a race-resistant privilege boundary.
 
-**Storage/availability:** SQLite decisions grow until an operator archives them. This release has no retention scheduler, database quota, HA, authenticated service API, queue, outbox, delivery retry or durable invalid-record ledger. Invalid results are stdout/stderr plus nonzero exit status; capture those explicitly. Existing source evidence must remain available for review. Disk full and SQLite corruption can stop ingestion.
+**Evidence integrity:** with `--evidence-key-file` the engine chains an HMAC-SHA256 over each stored alert and `verify-integrity` recomputes the chain. The key must stay outside the monitored host; anyone holding the database *and* the key can rechain. Without a key, hashes remain comparison aids only.
+
+**Delivery:** `deliver` transmits only when the operator runs it with explicit endpoint arguments and, for Splunk, a token in `FG_SPLUNK_HEC_TOKEN`. TLS uses the default verified context with no bypass selectable; the path is fixed; responses are bounded; attempts are durably recorded and never appear as acknowledgment. The operator selects the endpoint; protect command history and process listing accordingly. Wazuh file delivery does not prove manager ingestion.
+
+**Collection:** the Windows collector queries only the local Security log through a fixed `wevtutil` XPath and never sends data anywhere; the trail inbox reads only operator-staged files. Collector output still requires an authenticated, protected channel to the evidence store.
+
+**Storage/availability:** SQLite decisions grow until an operator archives them. This release has no retention scheduler, database quota, HA, authenticated service API, queue or durable invalid-record ledger. Invalid results are stdout/stderr plus nonzero exit status; capture those explicitly. Existing source evidence must remain available for review. Disk full and SQLite corruption can stop ingestion.
 
 **Concurrency:** use one local ingestion/acknowledgment writer. Multiwriter duplicate races and clock ordering are not a supported deployment mode. Monitor failure exit codes and do not retry blindly into a different database.
 
@@ -28,6 +37,6 @@
 
 **Response:** unexpected access does not establish malicious intent. No automated disablement, deletion, quarantine or account blocking is present. Human triage remains required.
 
-**Offline adapters:** packet rendering is not production delivery. The only HTTP helper uses a fixed loopback address and synthetic token for mock tests. Planned production TLS/auth/rate/outbox controls and their acceptance evidence are documented in [ADAPTERS.md](ADAPTERS.md).
+**Offline adapters:** packet rendering is not delivery; the `deliver` command performs real transport only when the operator explicitly configures it, as described above. The loopback mock helper stays fixed to `127.0.0.1` with a synthetic token.
 
 Report suspected security issues privately as described in [SECURITY.md](../SECURITY.md). Use synthetic reproduction data only. Do not upload operational placements or private telemetry.

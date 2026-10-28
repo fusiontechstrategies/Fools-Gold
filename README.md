@@ -19,10 +19,15 @@ The first release is an **offline pilot**, with no AWS or SIEM connection requir
 - Recognize explicitly scoped, expiring authorized access. Keep a decision record instead of silently discarding it.
 - Retain individual alert evidence, link nearby activity, and deduplicate exact replay across restarts.
 - Record a local analyst acknowledgment and its elapsed time.
+- Collect Windows Security 4663 events live through a fixed `wevtutil` query, filtered to registered decoy locations.
+- Process CloudTrail log files, including gzip, from a watched local inbox, idempotently by content digest.
+- Deliver retained alerts durably to Splunk HEC over verified TLS or append Wazuh JSONL locally, with bounded retries and a persistent outbox, only when the operator configures it.
+- Chain alert evidence with HMAC-SHA256 under an operator-held 32-byte key and re-verify the chain later.
+- Run a self-contained canary exercise (`check`) that can exercise configured delivery end to end.
 - Run repeatable synthetic scenarios that prove the core detection path.
 - Convert bounded Windows Event XML and CloudTrail Records exports, and render Wazuh JSONL or Splunk HEC packets offline.
 
-**No live deployment, Wazuh/Splunk delivery, Suricata integration or automatic response has been verified.** Demo timing and analyst actions are simulated, not customer results.
+**No production deployment, real SIEM ingestion, or analyst workflow has been verified.** Live collection is read-only local tooling; delivery is implemented but untested against a real Wazuh/Splunk installation. Demo timing and analyst actions are simulated, not customer results.
 
 ## Try the synthetic pilot
 
@@ -45,7 +50,13 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 PYTHONPATH=src python -m scripts.run_synthetic_pilot
 ```
 
-The exercise uses an isolated temporary database, a fixed synthetic clock, two synthetic read events, an authorized backup read and a replay. It prints an assurance report and removes its temporary runtime data.
+The exercise uses an isolated temporary database, a fixed synthetic clock, two synthetic read events, an authorized backup read and a replay. It prints an assurance report and removes its temporary runtime data. The same exercise is available as a command:
+
+```powershell
+python -m fools_gold check
+```
+
+`check` uses its own canary registry and a temporary database. Add `--wazuh-output` or `--splunk-host`/`--splunk-port` (plus `FG_SPLUNK_HEC_TOKEN` in the environment) to exercise configured delivery as well.
 
 For persisted synthetic evidence:
 

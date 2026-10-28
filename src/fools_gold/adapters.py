@@ -4,14 +4,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from .cli import parse_json
 from .collection import (
     MAX_EVENT_BYTES,
     MAX_EXPORT_BYTES,
     cloudtrail_export,
     windows_event_xml,
 )
-from .core import ContractError, canonical, required_dict
+from .core import ContractError, canonical, parse_json, required_dict
 from .delivery import splunk_hec_packet, wazuh_json_record
 
 

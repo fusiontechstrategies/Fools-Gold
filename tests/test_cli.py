@@ -84,3 +84,101 @@ class CliTests(unittest.TestCase):
         code, _, error = self.invoke("report")
         self.assertEqual(code, 2)
         self.assertIn("database", error)
+
+    def test_deliver_wazuh_writes_records_once(self):
+        import json as jsonlib
+
+
+        self.events.write_text(
+            jsonlib.dumps(self.event()) + "\n", encoding="utf-8"
+        )
+        self.invoke("ingest", str(self.events))
+        sink = self.folder / "wazuh.log"
+        code, output, _ = self.invoke(
+            "deliver", "--format", "wazuh", "--wazuh-output", str(sink)
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(len(sink.read_text(encoding="utf-8").splitlines()), 1)
+        code, _, _ = self.invoke(
+            "deliver", "--format", "wazuh", "--wazuh-output", str(sink)
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(len(sink.read_text(encoding="utf-8").splitlines()), 1)
+
+    def test_deliver_splunk_requires_host_and_port(self):
+        code, _, error = self.invoke("deliver", "--format", "splunk")
+        self.assertEqual(code, 2)
+        self.assertIn("--splunk-host", error)
+
+    def test_deliver_splunk_without_token_fails_closed(self):
+        import os
+        from unittest.mock import patch
+
+        self.events.write_text(
+            json.dumps(self.event()) + "\n", encoding="utf-8"
+        )
+        self.invoke("ingest", str(self.events))
+        with patch.dict(os.environ, {}, clear=True):
+            code, _, error = self.invoke(
+                "deliver",
+                "--format",
+                "splunk",
+                "--splunk-host",
+                "hec.internal.example",
+                "--splunk-port",
+                "8088",
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("FG_SPLUNK_HEC_TOKEN", error)
+
+    def test_trail_inbox_processes_and_skips_processed_files(self):
+        import gzip as gziplib
+        import json as jsonlib
+
+        from fools_gold.core import Engine, Registry
+
+        self.events.write_text(
+            jsonlib.dumps(self.event()) + "\n", encoding="utf-8"
+        )
+        self.invoke("ingest", str(self.events))
+        inbox = self.folder / "inbox"
+        inbox.mkdir()
+        (inbox / "trail.json.gz").write_bytes(
+            gziplib.compress(jsonlib.dumps({"Records": [self.event()]}).encode())
+        )
+        engine = Engine(
+            Registry(jsonlib.loads(self.registry.read_text(encoding="utf-8"))),
+            self.database,
+        )
+        from fools_gold.cli import run_trail_inbox
+
+        try:
+            self.assertEqual(run_trail_inbox(engine, str(inbox)), 0)
+            before = jsonlib.loads(self.invoke("report")[1])["decisions"]["alert"]
+            self.assertEqual(before, 1)
+            second = run_trail_inbox(engine, str(inbox))
+            self.assertEqual(second, 0)
+            self.assertEqual(
+                jsonlib.loads(self.invoke("report")[1])["decisions"]["alert"], before
+            )
+        finally:
+            engine.close()
+
+    def test_trail_inbox_rejects_malformed_file_and_reports(self):
+        import json as jsonlib
+
+        from fools_gold.core import Engine, Registry
+
+        inbox = self.folder / "inbox"
+        inbox.mkdir()
+        (inbox / "broken.json").write_text("{not json", encoding="utf-8")
+        engine = Engine(
+            Registry(jsonlib.loads(self.registry.read_text(encoding="utf-8"))),
+            self.database,
+        )
+        from fools_gold.cli import run_trail_inbox
+
+        try:
+            self.assertEqual(run_trail_inbox(engine, str(inbox)), 2)
+        finally:
+            engine.close()

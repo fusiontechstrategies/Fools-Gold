@@ -22,13 +22,21 @@ python -m fools_gold.adapters windows-export examples/windows-4663.synthetic.xml
 
 Bounds: 1 MiB export, 1 to 1,000 records, 64 KiB serialized record. No gzip decompression, S3 fetch, key percent-decoding or source attribution is inferred.
 
-All JSON adapters reject duplicate keys, nonfinite numbers (including exponent overflow), nesting beyond 32 and more than 100,000 value nodes. These limits also apply to registry/decision JSON inputs.
+All JSON adapters reject duplicate keys, nonfinite numbers (including exponent overflow), nesting beyond 32 and more than 100,000 value nodes; the trail inbox raises its explicit node bound to 1,000,000 for whole CloudTrail log files. These limits also apply to registry/decision JSON inputs.
 
 ```powershell
 python -m fools_gold.adapters cloudtrail-export examples/cloudtrail-export.synthetic.json > runtime/cloudtrail.jsonl
 ```
 
 Source authentication, original export retention and collection audit policy are still deployment requirements. A correctly shaped XML or JSON file can be forged.
+
+### Live Windows Security query
+
+`fools_gold.winlog.collect` runs one fixed `wevtutil` XPath query for event 4663 against the local Security log and maps the returned XML envelope through the same hardened parsing as exports. Only events whose normalized host/path match a registered decoy are emitted; contract failures are skipped with a visible count and never silently accepted. Requires Windows; the query is collector configuration, never event-driven.
+
+### CloudTrail log inbox
+
+`fools_gold.trail_inbox.cloudtrail_records_file` processes one CloudTrail log file that already landed in an operator-managed directory (fetching from S3 stays a credential-scoped deployment concern, such as a sync job). Bounds: 16 MiB per file, 10,000 records, 64 KiB per record, bounded gzip decompression. The `trail-inbox` command skips files already processed by SHA-256 digest; a file with malformed records stays unmarked so it can be corrected and retried, while deduplication keeps earlier decisions safe.
 
 ## Offline payload rendering
 
@@ -51,21 +59,29 @@ The test suite posts synthetic Splunk HEC packets to a locally created receiver.
 
 This is **mock transport receipt**, not Splunk indexing or analyst acknowledgment. The Wazuh test writes a synthetic record to a temporary local file and checks its JSON fields. It does not run Wazuh's decoder or alerting engine.
 
-## Production delivery requirements, not implemented
+## Production delivery, implemented with limits
 
-| Control | Planned acceptance requirement |
+The `deliver` command now sends retained alerts from a persistent SQLite outbox. It runs only when the operator explicitly configures an endpoint:
+
+```powershell
+python -m fools_gold --registry examples/registry.synthetic.json --database runtime/pilot.sqlite deliver --format wazuh --wazuh-output runtime/wazuh-feed.jsonl
+$env:FG_SPLUNK_HEC_TOKEN = '<token from protected secret storage>'
+python -m fools_gold --registry examples/registry.synthetic.json --database runtime/pilot.sqlite deliver --format splunk --splunk-host hec.internal.example --splunk-port 8088
+```
+
+Implemented controls: verified HTTPS with the default certificate trust (no bypass selectable), fixed HEC path with no redirect following, token from `FG_SPLUNK_HEC_TOKEN` only, 64 KiB packets, 4 KiB response bound, 5-second transport timeout, at most three attempts per packet with 1/2-second backoff, 0.25-second send pacing, durable per-attempt failure recording and `--retry-failed` requeueing. Wazuh delivery appends rendered records to an operator-selected local file with POSIX 0600 protection on creation and fsync. Every packet is keyed by `alert_id`, so repeated runs cannot duplicate delivery.
+
+Still true: transport receipt is not Splunk indexing, not Wazuh manager ingestion and not analyst acknowledgment; `send_splunk_mock` remains a loopback-only test helper; the mock test suite does not exercise Wazuh's decoder or Splunk's indexer; Windows ACL hardening and endpoint acceptance evidence are deployment tasks.
+
+Remaining acceptance requirements for a real deployment:
+
+| Control | Required evidence before trusting delivery |
 |---|---|
-| TLS | HTTPS with hostname/chain validation and approved CA trust; no insecure bypass |
-| Auth | Dedicated least-privilege HEC token from protected secret storage; no token in logs/source/control files |
-| Expiry | Token issuance/expiration/rotation owned and verified; expired or unknown credentials fail closed |
-| Endpoint | Operator-approved fixed endpoint; no telemetry-selected destination or redirect following |
-| Rate | Initially no more than 5 events/second, explicit bounded queue/backpressure and failure alarms |
-| Size/time | 64 KiB event packet, 4 KiB response, total request deadline 5 seconds |
-| Retry | Bounded retry with durable outbox, attempt evidence and alert-ID deduplication; no silent success |
-| HEC acceptance | Validate HEC response and use indexer acknowledgment where supported/configured |
-| Wazuh | Protected JSONL file, trusted agent-to-manager channel, verified decoder/rule and manager alert evidence |
-| Analyst | Separate authenticated case acknowledgment; transport receipt must not populate analyst acknowledgment |
-
-The planned rate/deadline/token controls are recorded in the review template, not enforced by a nonexistent production sender. HTTP is used only for the synthetic loopback mock. Real delivery remains disabled by absence of production transport code.
+| TLS trust | Approved CA chain against the real endpoint; hostname verified |
+| Auth | Dedicated least-privilege HEC token from protected secret storage; rotation/expiry owned and verified |
+| Endpoint | Operator-approved host/port; no telemetry-selected destination |
+| Indexing | HEC ack plus indexer acknowledgment where supported; alert visible in the product |
+| Wazuh | Trusted agent-to-manager channel, verified decoder/rule, manager alert evidence |
+| Analyst | Separate authenticated case acknowledgment; transport receipt must never populate it |
 
 Primary references: [Wazuh JSON decoder](https://documentation.wazuh.com/current/user-manual/ruleset/decoders/json-decoder.html), [Wazuh localfile](https://documentation.wazuh.com/current/user-manual/reference/ossec-conf/localfile.html), [Splunk HEC event format](https://help.splunk.com/splunk-enterprise/get-data-in/get-started-with-getting-data-in/9.0/get-data-with-http-event-collector/format-events-for-http-event-collector), [Splunk HEC input endpoints](https://help.splunk.com/splunk-enterprise/rest-api-reference/9.4/input-endpoints/input-endpoint-descriptions).

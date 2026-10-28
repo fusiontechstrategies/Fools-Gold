@@ -9,47 +9,38 @@ import re
 # bounded afterwards. See docs/ADAPTERS.md. defusedxml remains test-only.
 import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 
-from .cli import parse_json
-from .core import ContractError, normalize, text
+from .core import ContractError, normalize, parse_json, text
 
 EVENT_NS = "http://schemas.microsoft.com/win/2004/08/events/event"
 MAX_EVENT_BYTES = 65536
 MAX_EXPORT_BYTES = 1024 * 1024
+MAX_ENVELOPE_BYTES = 1024 * 1024
+MAX_ENVELOPE_EVENTS = 128
 
 
-def windows_event_xml(payload: bytes, *, log_epoch: str) -> dict:
-    """Map one genuine Windows Event XML export into the v1 collector contract.
-
-    log_epoch is trusted collector configuration, not an event-provided alias.
-    Input is untrusted even though collector authenticity must be secured outside
-    this function. DTDs, entities, oversized trees and duplicate fields fail.
-    """
-    text(log_epoch, "collector log epoch", 128)
-    if not isinstance(payload, bytes) or not 0 < len(payload) <= MAX_EVENT_BYTES:
-        raise ContractError("Windows XML must be bytes of at most 64 KiB")
-    # Require UTF-8. This also prevents declaration scanning bypass via UTF-16.
-    try:
-        content = payload.decode("utf-8-sig")
-    except UnicodeError as exc:
-        raise ContractError("Windows XML export must be UTF-8") from exc
+def _hardened_xml(content: str):
     lowered = content.casefold()
     if "<!doctype" in lowered or "<!entity" in lowered:
         raise ContractError("Windows XML DTD/entity declarations are forbidden")
     try:
-        root = ET.fromstring(content)
+        return ET.fromstring(content)
     except (ET.ParseError, ValueError) as exc:
         raise ContractError("invalid Windows XML") from exc
-    prefix = "{" + EVENT_NS + "}"
-    if root.tag != prefix + "Event":
-        raise ContractError("unexpected Windows Event namespace")
+
+
+def _bounded_element(root, *, max_elements=128, max_depth=6):
     queue = [(root, 0)]
     count = 0
     while queue:
         node, depth = queue.pop()
         count += 1
-        if depth > 6 or count > 128:
+        if depth > max_depth or count > max_elements:
             raise ContractError("Windows XML tree exceeds depth/element bounds")
         queue.extend((child, depth + 1) for child in node)
+
+
+def _mapped_from_event_element(root, log_epoch: str) -> dict:
+    prefix = "{" + EVENT_NS + "}"
 
     def one(parent, name):
         found = parent.findall(prefix + name)
@@ -96,7 +87,7 @@ def windows_event_xml(payload: bytes, *, log_epoch: str) -> dict:
         raise ContractError("Windows XML is missing required EventData")
     for name in required:
         text(fields[name], name, 2048)
-    mapped = {
+    return {
         "source": "windows.security",
         "provider": one(system, "Provider").attrib.get("Name"),
         "channel": one(system, "Channel").text,
@@ -112,8 +103,62 @@ def windows_event_xml(payload: bytes, *, log_epoch: str) -> dict:
         "access_mask": fields["AccessMask"],
         "process_name": fields["ProcessName"],
     }
+
+
+def windows_event_xml(payload: bytes, *, log_epoch: str) -> dict:
+    """Map one genuine Windows Event XML export into the v1 collector contract.
+
+    log_epoch is trusted collector configuration, not an event-provided alias.
+    Input is untrusted even though collector authenticity must be secured outside
+    this function. DTDs, entities, oversized trees and duplicate fields fail.
+    """
+    text(log_epoch, "collector log epoch", 128)
+    if not isinstance(payload, bytes) or not 0 < len(payload) <= MAX_EVENT_BYTES:
+        raise ContractError("Windows XML must be bytes of at most 64 KiB")
+    # Require UTF-8. This also prevents declaration scanning bypass via UTF-16.
+    try:
+        content = payload.decode("utf-8-sig")
+    except UnicodeError as exc:
+        raise ContractError("Windows XML export must be UTF-8") from exc
+    root = _hardened_xml(content)
+    prefix = "{" + EVENT_NS + "}"
+    if root.tag != prefix + "Event":
+        raise ContractError("unexpected Windows Event namespace")
+    _bounded_element(root)
+    mapped = _mapped_from_event_element(root, log_epoch)
     normalize(mapped)
     return mapped
+
+
+def windows_events_xml_envelope(payload: bytes, *, log_epoch: str, max_events=MAX_ENVELOPE_EVENTS) -> list[dict]:
+    """Map a bounded wevtutil XML query result (Events envelope) into contract events.
+
+    The query is fixed collector configuration; envelope content is still
+    treated as untrusted input with the same hardening as single exports.
+    """
+    text(log_epoch, "collector log epoch", 128)
+    if type(max_events) is not int or not 1 <= max_events <= MAX_ENVELOPE_EVENTS:
+        raise ContractError("envelope event limit must be 1 to 128")
+    if not isinstance(payload, bytes) or not 0 < len(payload) <= MAX_ENVELOPE_BYTES:
+        raise ContractError("Windows XML envelope must be bytes of at most 1 MiB")
+    try:
+        content = payload.decode("utf-8-sig")
+    except UnicodeError as exc:
+        raise ContractError("Windows XML envelope must be UTF-8") from exc
+    root = _hardened_xml(content)
+    prefix = "{" + EVENT_NS + "}"
+    if root.tag != prefix + "Events":
+        raise ContractError("unexpected Windows Events envelope namespace")
+    events = [child for child in root if child.tag == prefix + "Event"]
+    if len(events) > max_events:
+        raise ContractError("Windows XML envelope exceeds the event limit")
+    if len(root) != len(events):
+        raise ContractError("unexpected Windows Events envelope child")
+    mapped_events = []
+    for event in events:
+        _bounded_element(event)
+        mapped_events.append(_mapped_from_event_element(event, log_epoch))
+    return mapped_events
 
 
 def cloudtrail_export(payload: bytes) -> list[dict]:

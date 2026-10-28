@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import json
+import math
 import ntpath
 import re
 import sqlite3
@@ -27,6 +29,44 @@ def text(value, name: str, limit: int = 2048) -> str:
     if any(ord(c) < 32 for c in value):
         raise ContractError(f"{name} contains control characters")
     return value
+
+
+def no_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ContractError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def parse_json(data, max_nodes: int = 100000):
+    if type(max_nodes) is not int or not 1 <= max_nodes <= 10000000:
+        raise ContractError("JSON node limit must be 1 to 10000000")
+    try:
+        value = json.loads(
+            data,
+            object_pairs_hook=no_duplicate_keys,
+            parse_constant=lambda _: (_ for _ in ()).throw(
+                ContractError("nonfinite JSON number")
+            ),
+        )
+        pending = [(value, 0)]
+        nodes = 0
+        while pending:
+            node, depth = pending.pop()
+            nodes += 1
+            if depth > 32 or nodes > max_nodes:
+                raise ContractError("JSON exceeds depth/node limits")
+            if isinstance(node, float) and not math.isfinite(node):
+                raise ContractError("nonfinite JSON number")
+            if isinstance(node, dict):
+                pending.extend((child, depth + 1) for child in node.values())
+            elif isinstance(node, list):
+                pending.extend((child, depth + 1) for child in node)
+        return value
+    except (ValueError, RecursionError) as exc:
+        raise ContractError("invalid JSON input") from exc
 
 
 def instant(value) -> datetime:
@@ -277,8 +317,11 @@ class Registry:
 
 
 class Engine:
-    def __init__(self, registry: Registry, database: str | Path):
+    def __init__(self, registry: Registry, database: str | Path, mac_key: bytes | None = None):
         self.registry = registry
+        if mac_key is not None and (not isinstance(mac_key, bytes) or len(mac_key) != 32):
+            raise ContractError("evidence key must be exactly 32 bytes")
+        self.mac_key = mac_key
         self.db = sqlite3.connect(str(database))
         try:
             self._initialize()
@@ -299,10 +342,34 @@ class Engine:
                 acknowledged_at TEXT, acknowledged_by TEXT
             );
             CREATE INDEX IF NOT EXISTS alert_correlation ON alerts(decoy, actor, received_at DESC);
+            CREATE TABLE IF NOT EXISTS outbox (
+                alert_id TEXT NOT NULL, payload_format TEXT NOT NULL,
+                state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT, updated_at TEXT NOT NULL,
+                PRIMARY KEY (alert_id, payload_format)
+            );
+            CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(payload_format, state);
+            CREATE TABLE IF NOT EXISTS trail_files (
+                digest TEXT PRIMARY KEY, processed_at TEXT NOT NULL
+            );
         """)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(alerts)")}
+        migrations = {
+            "evidence_mac": "ALTER TABLE alerts ADD COLUMN evidence_mac TEXT",
+            "prev_mac": "ALTER TABLE alerts ADD COLUMN prev_mac TEXT",
+        }
+        for name, statement in migrations.items():
+            if name not in columns:
+                self.db.execute(statement)
 
     def close(self):
         self.db.close()
+
+    def evidence_mac(self, evidence: dict, prev_mac: str | None):
+        if self.mac_key is None:
+            return None
+        linked = (prev_mac or "").encode() + canonical(evidence).encode()
+        return hmac.new(self.mac_key, linked, hashlib.sha256).hexdigest()
 
     def process(self, raw: dict, received_at: datetime) -> dict:
         now = instant(stamp(received_at))
@@ -391,8 +458,15 @@ class Engine:
                         "severity": "high",
                         "interpretation": "Unexpected decoy interaction. Investigate before attributing intent.",
                     }
+                    # The chain links every stored alert to its predecessor when
+                    # an evidence key is configured; without a key both stay NULL.
+                    prior_mac = self.db.execute(
+                        "SELECT evidence_mac FROM alerts ORDER BY rowid DESC LIMIT 1"
+                    ).fetchone()
+                    prev_mac = prior_mac[0] if prior_mac else None
+                    mac = self.evidence_mac(evidence, prev_mac)
                     self.db.execute(
-                        "INSERT INTO alerts(id,decoy,actor,opened_at,received_at,evidence) VALUES(?,?,?,?,?,?)",
+                        "INSERT INTO alerts(id,decoy,actor,opened_at,received_at,evidence,evidence_mac,prev_mac) VALUES(?,?,?,?,?,?,?,?)",
                         (
                             alert_id,
                             decoy["id"],
@@ -400,6 +474,8 @@ class Engine:
                             event["time"],
                             stamp(now),
                             canonical(evidence),
+                            mac,
+                            prev_mac,
                         ),
                     )
                     result.update(decision="alert", alert=evidence)
@@ -451,3 +527,100 @@ class Engine:
             "SELECT evidence FROM alerts ORDER BY received_at,id"
         ):
             yield json.loads(evidence)
+
+    def verify_integrity(self) -> dict:
+        """Recompute the stored HMAC chain; requires the same evidence key."""
+        if self.mac_key is None:
+            raise ContractError("integrity verification requires an evidence key")
+        rows = self.db.execute(
+            "SELECT id,evidence,prev_mac,evidence_mac FROM alerts ORDER BY rowid"
+        ).fetchall()
+        failures = []
+        expected_prev = None
+        for alert_id, evidence, prev_mac, mac in rows:
+            if prev_mac != expected_prev:
+                failures.append({"alert_id": alert_id, "reason": "chain break"})
+            if self.evidence_mac(json.loads(evidence), prev_mac) != mac:
+                failures.append({"alert_id": alert_id, "reason": "mac mismatch"})
+            expected_prev = mac
+        return {
+            "schema_version": 1,
+            "alerts": len(rows),
+            "failures": failures,
+            "ok": not failures,
+        }
+
+    def outbox_enqueue(self, payload_format: str, now: datetime) -> int:
+        if payload_format not in ("wazuh", "splunk"):
+            raise ContractError("unsupported delivery format")
+        with self.db:
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO outbox(alert_id,payload_format,state,attempts,updated_at) "
+                "SELECT id,?,'pending',0,? FROM alerts",
+                (payload_format, stamp(now)),
+            )
+        return cursor.rowcount
+
+    def outbox_batch(self, payload_format: str, limit: int) -> list[tuple[str, dict]]:
+        if payload_format not in ("wazuh", "splunk"):
+            raise ContractError("unsupported delivery format")
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ContractError("delivery batch limit must be 1 to 1000")
+        rows = self.db.execute(
+            "SELECT o.alert_id,a.evidence FROM outbox o JOIN alerts a ON a.id=o.alert_id "
+            "WHERE o.payload_format=? AND o.state='pending' ORDER BY o.rowid LIMIT ?",
+            (payload_format, limit),
+        ).fetchall()
+        return [(alert_id, json.loads(evidence)) for alert_id, evidence in rows]
+
+    def outbox_mark(
+        self, payload_format: str, alert_id: str, state: str, now: datetime, error=None
+    ):
+        if state not in ("sent", "failed"):
+            raise ContractError("unsupported outbox state")
+        bounded_error = None if error is None else text(str(error), "outbox error", 256)
+        self.db.execute(
+            "UPDATE outbox SET state=?,attempts=attempts+1,last_error=?,updated_at=? "
+            "WHERE payload_format=? AND alert_id=?",
+            (state, bounded_error, stamp(now), payload_format, alert_id),
+        )
+
+    def outbox_reset_failed(self, payload_format: str, now: datetime) -> int:
+        if payload_format not in ("wazuh", "splunk"):
+            raise ContractError("unsupported delivery format")
+        with self.db:
+            cursor = self.db.execute(
+                "UPDATE outbox SET state='pending',updated_at=? "
+                "WHERE payload_format=? AND state='failed'",
+                (stamp(now), payload_format),
+            )
+        return cursor.rowcount
+
+    def outbox_report(self) -> dict:
+        rows = self.db.execute(
+            "SELECT payload_format,state,COUNT(*) FROM outbox GROUP BY payload_format,state"
+        ).fetchall()
+        counts: dict[str, dict[str, int]] = {}
+        for payload_format, state, count in rows:
+            counts.setdefault(payload_format, {})[state] = count
+        return {"schema_version": 1, "outbox": counts}
+
+    def trail_file_processed(self, digest: str) -> bool:
+        return (
+            self.db.execute(
+                "SELECT 1 FROM trail_files WHERE digest=?", (digest,)
+            ).fetchone()
+            is not None
+        )
+
+    def mark_trail_file(self, digest: str, now: datetime):
+        if (
+            not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-fA-F]{64}", digest)
+        ):
+            raise ContractError("trail file digest must be SHA-256 hexadecimal")
+        with self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO trail_files(digest,processed_at) VALUES(?,?)",
+                (digest, stamp(now)),
+            )

@@ -6,6 +6,8 @@ The test suite covers exact GovCloud S3 matching, Windows host/path boundaries a
 
 The adapter increment also tests native XML metadata/outcome, namespace and duplicate-field rejection, DTD/entity/encoding bounds, CloudTrail batch failure, registry snapshot isolation, JSON depth/exponent overflow, local-file Wazuh packet round trips, and loopback mock HEC acceptance/errors/redirects. Deployment artifacts are checked for disabled delivery and exact synthetic scope. This does not substitute for actual Wazuh/Splunk parsing or indexing.
 
+The 0.2.0 increment adds coverage for the wevtutil XML envelope and registry-filtered collection (malformed events are skipped with a count), gzip-bomb and digest-idempotent trail-inbox processing, outbox enqueue/batch/mark/reset semantics, Wazuh file delivery idempotency, Splunk HEC delivery attempts and failure recording over a loopback receiver (production always uses verified HTTPS; the injected plain-HTTP factory is test-only), HMAC chain verification and tamper detection including legacy schema migration, and the self-contained canary `check` with and without transport. Run the suite for current counts.
+
 The deterministic synthetic exercise produces:
 
 | Metric | Offline result |
@@ -20,6 +22,6 @@ The deterministic synthetic exercise produces:
 
 These delays are constructed from fixture timestamps. They are not measured service performance. CI repeats the tests and exercise on Windows/Linux with Python 3.12/3.13.
 
-Not verified: live AWS deployment, actual CloudTrail selectors or collection, real Windows policy/SACL/collector configuration, Wazuh/Splunk delivery, real analyst acknowledgment, Suricata correlation, authenticated transport, evidentiary integrity, HA or production retention.
+Not verified: live AWS deployment, actual CloudTrail selectors or collection, real Windows policy/SACL/collector configuration, Wazuh/Splunk ingestion through a real installation, real analyst acknowledgment, Suricata correlation, authenticated collection channels, evidentiary integrity against a privileged local attacker, HA or production retention.
 
 The next acceptance evidence must come from the governed pilot described in [PILOT.md](PILOT.md).

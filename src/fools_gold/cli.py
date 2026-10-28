@@ -1,53 +1,32 @@
-"""Explicit offline commands. No command deploys or transmits telemetry."""
+"""Explicit operator commands.
+
+Local by default: ingest, acknowledge, report, export-alerts, verify-integrity,
+trail-inbox and check never transmit. Only deliver transmits, and only when
+the operator explicitly supplies a configured endpoint and runs it.
+"""
 
 from __future__ import annotations
 
 import argparse
-import json
-import math
+import hashlib
 import os
+import re
 import sqlite3
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .core import ContractError, Engine, Registry, canonical
-
-
-def no_duplicate_keys(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ContractError("duplicate JSON object key")
-        result[key] = value
-    return result
-
-
-def parse_json(data):
-    try:
-        value = json.loads(
-            data,
-            object_pairs_hook=no_duplicate_keys,
-            parse_constant=lambda _: (_ for _ in ()).throw(
-                ContractError("nonfinite JSON number")
-            ),
-        )
-        pending = [(value, 0)]
-        nodes = 0
-        while pending:
-            node, depth = pending.pop()
-            nodes += 1
-            if depth > 32 or nodes > 100000:
-                raise ContractError("JSON exceeds depth/node limits")
-            if isinstance(node, float) and not math.isfinite(node):
-                raise ContractError("nonfinite JSON number")
-            if isinstance(node, dict):
-                pending.extend((child, depth + 1) for child in node.values())
-            elif isinstance(node, list):
-                pending.extend((child, depth + 1) for child in node)
-        return value
-    except (ValueError, RecursionError) as exc:
-        raise ContractError("invalid JSON input") from exc
+from .assurance import run_check
+from .core import (
+    ContractError,
+    Engine,
+    Registry,
+    canonical,
+    no_duplicate_keys,  # noqa: F401  (re-exported compatibility surface)
+    parse_json,
+)
+from .trail_inbox import MAX_INBOX_BYTES, cloudtrail_records_file
+from .transport import deliver
 
 
 def load_registry(path):
@@ -58,17 +37,103 @@ def load_registry(path):
     return Registry(parse_json(payload))
 
 
+def load_evidence_key(path) -> bytes:
+    with Path(path).open("rb") as handle:
+        payload = handle.read(1025)
+    if len(payload) > 1024:
+        raise ContractError("evidence key file exceeds 1 KiB")
+    try:
+        value = payload.decode("ascii").strip()
+    except UnicodeError as exc:
+        raise ContractError("evidence key file must be ASCII") from exc
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        raise ContractError("evidence key must be 64 hexadecimal characters (32 bytes)")
+    return bytes.fromhex(value)
+
+
+def run_trail_inbox(engine: Engine, directory: str):
+    folder = Path(directory)
+    if not folder.is_dir():
+        raise ContractError("trail inbox must be an existing directory")
+    candidates = sorted(
+        path
+        for path in folder.iterdir()
+        if path.is_file()
+        and (path.name.endswith(".json") or path.name.endswith(".json.gz"))
+    )
+    errors = 0
+    skipped = 0
+    for path in candidates:
+        with path.open("rb") as handle:
+            payload = handle.read(MAX_INBOX_BYTES + 1)
+        if len(payload) > MAX_INBOX_BYTES:
+            errors += 1
+            print(
+                canonical(
+                    {
+                        "decision": "rejected",
+                        "file": path.name,
+                        "error": "CloudTrail log file exceeds 16 MiB",
+                    }
+                )
+            )
+            continue
+        digest = hashlib.sha256(payload).hexdigest()
+        if engine.trail_file_processed(digest):
+            skipped += 1
+            continue
+        try:
+            records = cloudtrail_records_file(payload)
+        except ContractError as exc:
+            errors += 1
+            print(
+                canonical(
+                    {"decision": "rejected", "file": path.name, "error": str(exc)}
+                )
+            )
+            continue
+        had_error = False
+        for record in records:
+            try:
+                result = engine.process(record, datetime.now(UTC))
+            except ContractError as exc:
+                had_error = True
+                errors += 1
+                print(
+                    canonical(
+                        {
+                            "decision": "rejected",
+                            "file": path.name,
+                            "error": str(exc),
+                        }
+                    )
+                )
+            else:
+                print(canonical(result))
+        if not had_error:
+            engine.mark_trail_file(digest, datetime.now(UTC))
+    return 2 if errors else 0
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Fool's Gold offline detection pilot")
-    parser.add_argument("--registry", required=True)
+    parser = argparse.ArgumentParser(description="Fool's Gold decoy detection pilot")
+    parser.add_argument("--registry", help="Protected exact-location registry JSON")
     parser.add_argument(
-        "--database", required=True, help="Protected local SQLite evidence database"
+        "--database", help="Protected local SQLite evidence database"
+    )
+    parser.add_argument(
+        "--evidence-key-file",
+        help="File holding 64 hexadecimal characters (32 bytes) for HMAC evidence chaining",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     ingest = commands.add_parser(
         "ingest", help="Read JSONL events; print decision JSONL"
     )
     ingest.add_argument("events")
+    inbox = commands.add_parser(
+        "trail-inbox", help="Process CloudTrail log files from a local inbox directory"
+    )
+    inbox.add_argument("directory")
     ack = commands.add_parser(
         "acknowledge", help="Record a local analyst acknowledgment"
     )
@@ -79,18 +144,66 @@ def main(argv=None):
         "export-alerts",
         help="Read retained alerts as decision JSONL; does not deliver or acknowledge",
     )
+    commands.add_parser(
+        "verify-integrity",
+        help="Recompute the HMAC evidence chain; requires --evidence-key-file",
+    )
+    deliver_parser = commands.add_parser(
+        "deliver",
+        help="Deliver retained alerts to an operator-configured endpoint",
+    )
+    deliver_parser.add_argument(
+        "--format", choices=("wazuh", "splunk"), required=True
+    )
+    deliver_parser.add_argument("--splunk-host")
+    deliver_parser.add_argument("--splunk-port", type=int)
+    deliver_parser.add_argument("--wazuh-output")
+    deliver_parser.add_argument("--limit", type=int, default=64)
+    deliver_parser.add_argument(
+        "--retry-failed", action="store_true", help="Requeue previously failed packets"
+    )
+    check = commands.add_parser(
+        "check", help="Run the self-contained synthetic assurance exercise"
+    )
+    check.add_argument("--splunk-host")
+    check.add_argument("--splunk-port", type=int)
+    check.add_argument("--wazuh-output")
     args = parser.parse_args(argv)
     engine = None
     try:
         # Protect new POSIX runtime files. Windows deployment requires explicit ACLs.
         if os.name != "nt":
             os.umask(0o077)
+        if args.command == "check":
+            transport_config = None
+            if (args.splunk_host is not None) and (args.wazuh_output is not None):
+                raise ContractError("check accepts at most one transport target")
+            if args.splunk_host is not None:
+                if args.splunk_port is None:
+                    raise ContractError("check Splunk transport requires --splunk-port")
+                transport_config = {
+                    "format": "splunk",
+                    "splunk_host": args.splunk_host,
+                    "splunk_port": args.splunk_port,
+                }
+            elif args.wazuh_output is not None:
+                transport_config = {"format": "wazuh", "wazuh_output": args.wazuh_output}
+            result = run_check(transport_config=transport_config)
+            print(canonical(result))
+            return 0 if result["ok"] else 2
+        if not args.registry or not args.database:
+            raise ContractError("this command requires --registry and --database")
         path = Path(args.database)
         if path.is_symlink() or not path.parent.is_dir():
             raise ContractError(
                 "database requires an existing trusted directory and a nonsymlink leaf"
             )
-        engine = Engine(load_registry(args.registry), path)
+        mac_key = (
+            load_evidence_key(args.evidence_key_file)
+            if args.evidence_key_file
+            else None
+        )
+        engine = Engine(load_registry(args.registry), path, mac_key=mac_key)
         if args.command == "ingest":
             errors = 0
             with Path(args.events).open("rb") as handle:
@@ -124,12 +237,42 @@ def main(argv=None):
                     else:
                         print(canonical(result))
             return 2 if errors else 0
+        if args.command == "trail-inbox":
+            return run_trail_inbox(engine, args.directory)
+        if args.command == "deliver":
+            if args.format == "splunk" and (
+                args.splunk_host is None or args.splunk_port is None
+            ):
+                raise ContractError(
+                    "Splunk delivery requires --splunk-host and --splunk-port"
+                )
+            if args.format == "wazuh" and args.wazuh_output is None:
+                raise ContractError("Wazuh delivery requires --wazuh-output")
+            summary = deliver(
+                engine,
+                args.format,
+                datetime.now(UTC),
+                splunk_host=args.splunk_host,
+                splunk_port=args.splunk_port,
+                wazuh_output=args.wazuh_output,
+                retry_failed=args.retry_failed,
+                limit=args.limit,
+            )
+            summary.update(engine.outbox_report())
+            print(canonical(summary))
+            return 0 if summary["complete"] else 2
         if args.command == "export-alerts":
             for alert in engine.export_alerts():
                 print(canonical({"decision": "alert", "alert": alert}))
         elif args.command == "acknowledge":
             engine.acknowledge(args.alert_id, args.analyst, datetime.now(UTC))
             print(canonical({"alert_id": args.alert_id, "acknowledged": True}))
+        elif args.command == "verify-integrity":
+            if not args.evidence_key_file:
+                raise ContractError("verify-integrity requires --evidence-key-file")
+            outcome = engine.verify_integrity()
+            print(canonical(outcome))
+            return 0 if outcome["ok"] else 2
         else:
             print(canonical(engine.report()))
         return 0
