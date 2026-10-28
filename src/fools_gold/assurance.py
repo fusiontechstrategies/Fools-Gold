@@ -7,11 +7,15 @@ durable delivery. It never touches live collection and never invents
 deployment results.
 """
 
+import json
+import math
+import platform
 import tempfile
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .core import Engine, Registry, stamp
+from .core import ContractError, Engine, Registry, instant, stamp
 from .transport import deliver
 
 CANARY_PREFIX = "fg-canary"
@@ -207,3 +211,138 @@ def run_check(now: datetime | None = None, transport_config: dict | None = None)
             }
         finally:
             engine.close()
+
+
+def default_live_probe(registry: Registry, host: str | None = None) -> dict:
+    """Read bounded bytes from registered decoy files present on this host.
+
+    Returns the decoy ids touched so the caller can look for a matching alert.
+    Reading only occurs for decoys registered to this machine name.
+    """
+    host = (host or platform.node() or "").casefold()
+    probed = []
+    for decoy in registry.decoys[:100]:
+        if decoy["source"] not in ("windows.security", "linux.audit"):
+            continue
+        if decoy["locator"]["host"] != host:
+            continue
+        try:
+            with open(decoy["locator"]["path"], "rb") as handle:
+                handle.read(64)
+        except OSError:
+            continue
+        probed.append(decoy["id"])
+    return {"decoy_ids": probed, "probed": len(probed)}
+
+
+def _run_live_probe(engine, probe, wait_seconds, sleep, clock):
+    started = clock()
+    outcome = probe() or {}
+    decoys = set(outcome.get("decoy_ids") or [])
+    if not decoys:
+        return {
+            "passed": False,
+            "reason": "no registered decoy was readable on this host",
+        }
+    deadline = started.timestamp() + wait_seconds
+    while clock().timestamp() <= deadline:
+        for (evidence,) in engine.db.execute("SELECT evidence FROM alerts"):
+            alert = json.loads(evidence)
+            if alert["decoy_id"] in decoys and instant(alert["observed_at"]) >= started:
+                return {
+                    "passed": True,
+                    "alert_id": alert["alert_id"],
+                    "decoy_ids": sorted(decoys),
+                }
+        sleep(1)
+    return {
+        "passed": False,
+        "reason": "no alert observed within the wait window",
+        "decoy_ids": sorted(decoys),
+    }
+
+
+def run_assurance(
+    report_engine: Engine,
+    *,
+    now: datetime | None = None,
+    transport_config: dict | None = None,
+    probe=None,
+    wait_seconds: int = 10,
+    sleep=time.sleep,
+    clock=None,
+):
+    """Run the canary suite, optionally a live probe, and record the outcome."""
+    now = now or datetime.now(UTC)
+    if type(wait_seconds) is not int or not 1 <= wait_seconds <= 300:
+        raise ContractError("wait seconds must be an integer from 1 to 300")
+    clock = clock or (lambda: datetime.now(UTC))
+    result = run_check(now=now, transport_config=transport_config)
+    result["mode"] = "live" if probe is not None else "canary"
+    if probe is not None:
+        live = _run_live_probe(report_engine, probe, wait_seconds, sleep, clock)
+        result["live"] = live
+        result["scenarios"].append({"name": "Live decoy probe", **live})
+        if not live["passed"]:
+            result["ok"] = False
+            result["failed_scenarios"] += 1
+    report_engine.record_assurance(
+        now,
+        result["mode"],
+        result["ok"],
+        result["failed_scenarios"],
+        {"scenarios": result["scenarios"], "delivery": result.get("delivery")},
+    )
+    return result
+
+
+def _percentile(values, fraction):
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, math.ceil(fraction * len(ordered)) - 1))
+    return ordered[index]
+
+
+def assurance_report(engine: Engine, *, max_age_hours=None, now: datetime | None = None):
+    """Summarize assurance history and detection/acknowledgment latencies."""
+    now = now or datetime.now(UTC)
+    if max_age_hours is not None and (
+        type(max_age_hours) is not int or not 0 <= max_age_hours <= 24 * 3650
+    ):
+        raise ContractError("max age hours must be a nonnegative integer")
+    history = engine.assurance_history(1000)
+    alerts = list(engine.export_alerts())
+    delays = [alert["telemetry_delay_seconds"] for alert in alerts]
+    acknowledgments = engine.report()["acknowledgment_seconds"]
+    last_ok = next((run for run in history if run["ok"]), None)
+    age_hours = None
+    if last_ok is not None:
+        age_hours = round(
+            (now - instant(last_ok["ran_at"])).total_seconds() / 3600, 3
+        )
+    stale = None
+    if max_age_hours is not None:
+        stale = age_hours is None or age_hours > max_age_hours
+    return {
+        "schema_version": 1,
+        "runs": len(history),
+        "passed": sum(1 for run in history if run["ok"]),
+        "failed": sum(1 for run in history if not run["ok"]),
+        "last_ok_at": last_ok["ran_at"] if last_ok else None,
+        "last_ok_age_hours": age_hours,
+        "mttd_seconds": {
+            "p50": _percentile(delays, 0.50),
+            "p95": _percentile(delays, 0.95),
+            "max": max(delays) if delays else None,
+            "samples": len(delays),
+        },
+        "mtta_seconds": {
+            "p50": _percentile(acknowledgments, 0.50),
+            "p95": _percentile(acknowledgments, 0.95),
+            "max": max(acknowledgments) if acknowledgments else None,
+            "samples": len(acknowledgments),
+        },
+        "max_age_hours": max_age_hours,
+        "stale": stale,
+    }

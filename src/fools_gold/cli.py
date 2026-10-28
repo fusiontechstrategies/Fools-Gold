@@ -17,7 +17,12 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .assurance import run_check
+from .assurance import (
+    assurance_report,
+    default_live_probe,
+    run_assurance,
+    run_check,
+)
 from .core import (
     ContractError,
     Engine,
@@ -25,6 +30,7 @@ from .core import (
     canonical,
     no_duplicate_keys,  # noqa: F401  (re-exported compatibility surface)
     parse_json,
+    restore_database,
 )
 from .trail_inbox import MAX_INBOX_BYTES, cloudtrail_records_file
 from .transport import deliver
@@ -50,6 +56,24 @@ def load_evidence_key(path) -> bytes:
     if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
         raise ContractError("evidence key must be 64 hexadecimal characters (32 bytes)")
     return bytes.fromhex(value)
+
+
+def _transport_config(args, command):
+    if (args.splunk_host is not None) and (args.wazuh_output is not None):
+        raise ContractError(f"{command} accepts at most one transport target")
+    if args.splunk_host is None and args.splunk_port is not None:
+        raise ContractError(f"{command} --splunk-port requires --splunk-host")
+    if args.splunk_host is not None:
+        if args.splunk_port is None:
+            raise ContractError(f"{command} Splunk transport requires --splunk-port")
+        return {
+            "format": "splunk",
+            "splunk_host": args.splunk_host,
+            "splunk_port": args.splunk_port,
+        }
+    if args.wazuh_output is not None:
+        return {"format": "wazuh", "wazuh_output": args.wazuh_output}
+    return None
 
 
 def run_windows_collector(
@@ -201,6 +225,9 @@ def main(argv=None):
     deliver_parser.add_argument("--wazuh-output")
     deliver_parser.add_argument("--limit", type=int, default=64)
     deliver_parser.add_argument(
+        "--route", help="Only enqueue alerts whose decoy uses this route"
+    )
+    deliver_parser.add_argument(
         "--retry-failed", action="store_true", help="Requeue previously failed packets"
     )
     check = commands.add_parser(
@@ -209,6 +236,30 @@ def main(argv=None):
     check.add_argument("--splunk-host")
     check.add_argument("--splunk-port", type=int)
     check.add_argument("--wazuh-output")
+    assure = commands.add_parser(
+        "assure",
+        help="Run the canary suite against this deployment and record the result",
+    )
+    assure.add_argument("--live", action="store_true", help="Also probe real decoy files")
+    assure.add_argument("--wait-seconds", type=int, default=10)
+    assure.add_argument("--splunk-host")
+    assure.add_argument("--splunk-port", type=int)
+    assure.add_argument("--wazuh-output")
+    report = commands.add_parser(
+        "assure-report",
+        help="Show assurance history and MTTD/MTTA metrics",
+    )
+    report.add_argument("--max-age-hours", type=int)
+    prune = commands.add_parser(
+        "prune", help="Delete evidence older than a retention window"
+    )
+    prune.add_argument("--older-than-days", type=int, required=True)
+    backup = commands.add_parser("backup", help="Write a consistent database copy")
+    backup.add_argument("--out", required=True)
+    restore = commands.add_parser(
+        "restore", help="Replace the database with a verified backup"
+    )
+    restore.add_argument("--source", required=True)
     args = parser.parse_args(argv)
     engine = None
     try:
@@ -227,23 +278,19 @@ def main(argv=None):
                 interval_seconds=args.interval_seconds,
                 max_events=args.max_events,
             )
+        if args.command == "restore":
+            if not args.database:
+                raise ContractError("restore requires --database")
+            destination = Path(args.database)
+            if destination.is_symlink() or not destination.parent.is_dir():
+                raise ContractError(
+                    "restore requires an existing trusted directory and a nonsymlink leaf"
+                )
+            restore_database(args.source, destination)
+            print(canonical({"restored": True, "database": str(destination)}))
+            return 0
         if args.command == "check":
-            transport_config = None
-            if (args.splunk_host is not None) and (args.wazuh_output is not None):
-                raise ContractError("check accepts at most one transport target")
-            if args.splunk_host is None and args.splunk_port is not None:
-                raise ContractError("check --splunk-port requires --splunk-host")
-            if args.splunk_host is not None:
-                if args.splunk_port is None:
-                    raise ContractError("check Splunk transport requires --splunk-port")
-                transport_config = {
-                    "format": "splunk",
-                    "splunk_host": args.splunk_host,
-                    "splunk_port": args.splunk_port,
-                }
-            elif args.wazuh_output is not None:
-                transport_config = {"format": "wazuh", "wazuh_output": args.wazuh_output}
-            result = run_check(transport_config=transport_config)
+            result = run_check(transport_config=_transport_config(args, "check"))
             print(canonical(result))
             return 0 if result["ok"] else 2
         if not args.registry or not args.database:
@@ -259,6 +306,26 @@ def main(argv=None):
             else None
         )
         engine = Engine(load_registry(args.registry), path, mac_key=mac_key)
+        if args.command == "assure":
+            result = run_assurance(
+                engine,
+                transport_config=_transport_config(args, "assure"),
+                probe=default_live_probe(engine.registry) if args.live else None,
+                wait_seconds=args.wait_seconds,
+            )
+            print(canonical(result))
+            return 0 if result["ok"] else 2
+        if args.command == "assure-report":
+            outcome = assurance_report(engine, max_age_hours=args.max_age_hours)
+            print(canonical(outcome))
+            return 2 if outcome["stale"] else 0
+        if args.command == "prune":
+            counts = engine.prune(datetime.now(UTC), args.older_than_days)
+            print(canonical({"pruned": counts}))
+            return 0
+        if args.command == "backup":
+            print(canonical({"backup": engine.backup(args.out)}))
+            return 0
         if args.command == "ingest":
             errors = 0
             with Path(args.events).open("rb") as handle:
@@ -312,6 +379,7 @@ def main(argv=None):
                 wazuh_output=args.wazuh_output,
                 retry_failed=args.retry_failed,
                 limit=args.limit,
+                route=args.route,
             )
             summary.update(engine.outbox_report())
             print(canonical(summary))

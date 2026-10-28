@@ -123,6 +123,7 @@ def deliver(
     connection_factory=None,
     retry_failed=False,
     limit=64,
+    route=None,
 ) -> dict:
     """Send pending outbox packets with bounded attempts; stop at first failure.
 
@@ -133,7 +134,7 @@ def deliver(
         raise ContractError("unsupported delivery format")
     if retry_failed:
         engine.outbox_reset_failed(payload_format, now)
-    engine.outbox_enqueue(payload_format, now)
+    engine.outbox_enqueue(payload_format, now, route=route)
     sent = 0
     if payload_format == "splunk":
         if splunk_host is None or splunk_port is None:
