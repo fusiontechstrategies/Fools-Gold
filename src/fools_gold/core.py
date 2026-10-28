@@ -134,6 +134,65 @@ def required_dict(value, name):
     return value
 
 
+def _lock_file(handle) -> bool:
+    """Non-blocking exclusive advisory lock on a lock file."""
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"0")
+        handle.flush()
+    handle.seek(0)
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock_file(handle):
+    handle.seek(0)
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+def acquire_database_lock(database: str | Path):
+    """Take the single-writer advisory lock; returns the open lock handle."""
+    lock_path = Path(str(database) + ".lock")
+    if lock_path.is_symlink() or not lock_path.parent.is_dir():
+        raise ContractError(
+            "database requires an existing trusted directory and a nonsymlink lock leaf"
+        )
+    handle = open(lock_path, "a+b")
+    if not _lock_file(handle):
+        handle.close()
+        raise ContractError(
+            "database is locked by another Fool's Gold writer; use one writer per database"
+        )
+    return handle
+
+
+def release_database_lock(handle):
+    try:
+        _unlock_file(handle)
+    finally:
+        handle.close()
+
+
 WINDOWS_EVENT_OUTCOMES = {4663: "success", 4656: "failure"}
 GOVCLOUD_REGIONS = {"us-gov-east-1", "us-gov-west-1"}
 S3_OPERATIONS = {
@@ -434,11 +493,17 @@ class Engine:
         database: str | Path,
         mac_key: bytes | None = None,
         thread_safe: bool = False,
+        single_writer: bool | None = None,
     ):
         self.registry = registry
         if mac_key is not None and (not isinstance(mac_key, bytes) or len(mac_key) != 32):
             raise ContractError("evidence key must be exactly 32 bytes")
         self.mac_key = mac_key
+        if single_writer is None:
+            single_writer = str(database) != ":memory:"
+        self._lock_handle = (
+            acquire_database_lock(database) if single_writer else None
+        )
         # The dashboard shares one connection across request threads under a
         # lock; every other caller keeps sqlite3's same-thread guarantee.
         self.db = sqlite3.connect(str(database), check_same_thread=not thread_safe)
@@ -446,6 +511,9 @@ class Engine:
             self._initialize()
         except BaseException:
             self.db.close()
+            if self._lock_handle is not None:
+                release_database_lock(self._lock_handle)
+                self._lock_handle = None
             raise
 
     def _initialize(self):
@@ -496,7 +564,12 @@ class Engine:
             self.db.execute("ALTER TABLE decisions ADD COLUMN created_at TEXT")
 
     def close(self):
-        self.db.close()
+        try:
+            self.db.close()
+        finally:
+            if self._lock_handle is not None:
+                release_database_lock(self._lock_handle)
+                self._lock_handle = None
 
     def evidence_mac(self, evidence: dict, prev_mac: str | None):
         if self.mac_key is None:
@@ -858,8 +931,91 @@ class Engine:
         return str(path)
 
 
+RESTORE_TABLES = {
+    "decisions": {"event_key", "fingerprint", "result", "created_at"},
+    "alerts": {
+        "id",
+        "decoy",
+        "actor",
+        "opened_at",
+        "received_at",
+        "evidence",
+        "acknowledged_at",
+        "acknowledged_by",
+        "evidence_mac",
+        "prev_mac",
+        "route",
+    },
+    "outbox": {
+        "alert_id",
+        "payload_format",
+        "state",
+        "attempts",
+        "last_error",
+        "updated_at",
+    },
+    "trail_files": {"digest", "processed_at"},
+    "assurance_runs": {"id", "ran_at", "mode", "ok", "failed_scenarios", "details"},
+}
+
+RESTORE_SCHEMA_SQL = {
+    table: f"PRAGMA table_info({table})" for table in RESTORE_TABLES
+}
+
+
+def _validate_restore_source(src: Path):
+    """Reject anything that is not a complete, healthy Fool's Gold database.
+
+    Validation runs before the destination is touched; a failure leaves it
+    untouched.
+    """
+    try:
+        check = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        try:
+            integrity = check.execute("PRAGMA integrity_check").fetchone()
+            if not integrity or integrity[0] != "ok":
+                raise ContractError(
+                    "restore source failed SQLite integrity_check"
+                )
+            tables = {
+                row[0]
+                for row in check.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            missing = set(RESTORE_TABLES) - tables
+            if missing:
+                raise ContractError(
+                    "restore source is missing required tables: "
+                    + ", ".join(sorted(missing))
+                )
+            for table, columns in RESTORE_TABLES.items():
+                actual = {
+                    row[1] for row in check.execute(RESTORE_SCHEMA_SQL[table])
+                }
+                absent = columns - actual
+                if absent:
+                    raise ContractError(
+                        f"restore source table {table} is missing columns: "
+                        + ", ".join(sorted(absent))
+                    )
+        finally:
+            check.close()
+    except sqlite3.Error as exc:
+        raise ContractError(
+            "restore source is not a readable Fool's Gold database"
+        ) from exc
+
+
 def restore_database(source, destination) -> str:
-    """Atomically replace a closed evidence database with a verified backup."""
+    """Exclusively replace a closed database with a validated backup.
+
+    Procedure: validate the source, take the writer lock (fails for an active
+    destination), checkpoint/recover the destination, copy the source to a
+    temp file in the destination directory, remove the destination's stale
+    sidecars while the writer lock is held, then atomically replace the main
+    file. Any failure leaves the destination untouched.
+    """
     src = Path(source)
     dst = Path(destination)
     if src.is_symlink() or not src.is_file():
@@ -873,19 +1029,21 @@ def restore_database(source, destination) -> str:
         raise ContractError(
             "restore requires an existing trusted directory and a nonsymlink leaf"
         )
+    _validate_restore_source(src)
+    lock = acquire_database_lock(dst)
     try:
-        check = sqlite3.connect(str(src))
-        try:
-            tables = {
-                row[0]
-                for row in check.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                )
-            }
-            if not {"alerts", "decisions"} <= tables:
-                raise ContractError("restore source is not a Fool's Gold database")
-        finally:
-            check.close()
+        if dst.exists():
+            # Recover any crash-created destination WAL under the writer lock.
+            try:
+                check = sqlite3.connect(str(dst), timeout=1)
+                try:
+                    check.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                finally:
+                    check.close()
+            except sqlite3.Error as exc:
+                raise ContractError(
+                    "restore destination is not recoverable; close all connections"
+                ) from exc
         temporary = dst.with_suffix(dst.suffix + ".restore-tmp")
         try:
             if temporary.exists():
@@ -898,14 +1056,22 @@ def restore_database(source, destination) -> str:
                     writer.write(chunk)
                 writer.flush()
                 os.fsync(writer.fileno())
+            # The destination has no active writer (we hold the lock) and its
+            # WAL was checkpointed above, so remaining sidecars are stale and
+            # must not survive the replacement.
+            for suffix in ("-wal", "-shm"):
+                sidecar = Path(str(dst) + suffix)
+                if sidecar.exists():
+                    sidecar.unlink()
             os.replace(temporary, dst)
-        except OSError:
-            # Never leave a partial restore file behind.
+        except OSError as exc:
             try:
                 temporary.unlink()
             except OSError:
                 pass
-            raise
-    except sqlite3.Error as exc:
-        raise ContractError("restore source is not a readable database") from exc
+            raise ContractError(
+                "restore could not replace the destination"
+            ) from exc
+    finally:
+        release_database_lock(lock)
     return str(dst)

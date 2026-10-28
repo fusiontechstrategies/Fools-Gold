@@ -154,13 +154,11 @@ class CliTests(unittest.TestCase):
 
         try:
             self.assertEqual(run_trail_inbox(engine, str(inbox)), 0)
-            before = jsonlib.loads(self.invoke("report")[1])["decisions"]["alert"]
+            before = engine.report()["decisions"]["alert"]
             self.assertEqual(before, 1)
             second = run_trail_inbox(engine, str(inbox))
             self.assertEqual(second, 0)
-            self.assertEqual(
-                jsonlib.loads(self.invoke("report")[1])["decisions"]["alert"], before
-            )
+            self.assertEqual(engine.report()["decisions"]["alert"], before)
         finally:
             engine.close()
 
