@@ -6,10 +6,14 @@
 
 [![CI](https://github.com/fusiontechstrategies/Fools-Gold/actions/workflows/ci.yml/badge.svg)](https://github.com/fusiontechstrategies/Fools-Gold/actions/workflows/ci.yml)
 [![Security](https://github.com/fusiontechstrategies/Fools-Gold/actions/workflows/security.yml/badge.svg)](https://github.com/fusiontechstrategies/Fools-Gold/actions/workflows/security.yml)
+![Status: offline pilot](https://img.shields.io/badge/status-offline%20pilot-8a6d3b)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 Put harmless bait where an intruder might look. Know when someone touches it. Regularly prove that the resulting alert can reach a person.
 
 Fool's Gold is an open-source toolkit from Fusion Technology Strategies for internal cyber decoys and detection assurance in AWS GovCloud and Windows environments. Its starting point is CISA's September 16, 2026 paper, **Using Cyber Decoys to Strengthen Detection and Response**.
+
+> **Project status: offline pilot seeking infrastructure validation.** The synthetic exercise and local evidence pipeline are reproducible. Production deployment, real GovCloud collection, real SIEM ingestion, and a real analyst workflow have not been verified. Evaluate one integration at a time and report the boundary you actually tested.
 
 ![Fool's Gold operations console showing synthetic alerts and evidence health](docs/images/overview.jpg)
 
@@ -166,6 +170,16 @@ Unexpected decoy access is a reason to investigate. It does not prove that the a
 
 Decoy expiration does **not** switch off detection. It raises a maintenance flag while preserving alerts. SHA-256 values help compare evidence; they do not authenticate its source or protect against an administrator rewriting the database.
 
+## Help validate the pilot
+
+The most valuable contribution is an authorized, reproducible integration result, not a star or an unqualified success claim. Good validation targets include:
+
+- a disposable Windows lab with an exact decoy path and the documented 4663 collection contract;
+- a non-production GovCloud account with approved CloudTrail S3 data-event coverage; or
+- a test Wazuh or Splunk destination where delivery, parsing, indexing, and analyst acknowledgment can be verified separately.
+
+Start with the [pilot deployment and acceptance plan](docs/PILOT.md), remove customer and infrastructure identifiers from any evidence, and share the observed stage results in [GitHub Discussions](https://github.com/fusiontechstrategies/Fools-Gold/discussions). A synthetic pass must remain labeled synthetic; failed or unclear results are equally useful.
+
 ## Read next
 
 - [Operator acceptance walkthrough](docs/OPERATIONS.md) — install → init → plant → collect → ingest → verify → deliver → assure → investigate → acknowledge → export → recover
@@ -179,6 +193,12 @@ Decoy expiration does **not** switch off detection. It raises a maintenance flag
 - [Focused security review](docs/SECURITY-REVIEW-2026-10-02.md)
 
 Placement details, operational telemetry, client information and credentials belong in protected deployment storage. Only synthetic examples belong in this repository. Public source code is not a substitute for access control on your own deployment data.
+
+## Related Fusion projects
+
+- [AWS GovHawk Efficiency Analyzer](https://github.com/fusiontechstrategies/AWS-GovHawk-Efficiency-Analyzer) provides review-only GovCloud inventory signals.
+- [M365 Incident Response Console](https://github.com/fusiontechstrategies/M365-Incident-Response-Console) demonstrates a separate guarded investigation and evidence workflow.
+- Explore the complete [Fusion Technology Strategies public portfolio](https://github.com/fusiontechstrategies/FusionTechStrategies).
 
 ## Contributing and support
 
