@@ -1,6 +1,8 @@
 # Fool's Gold
 
-<img src="src/fools_gold/assets/prospector.png" alt="Fool's Gold prospector holding a gold nugget" width="140">
+<p align="center">
+  <img src=".github/assets/social-preview.jpg" width="960" alt="Fool's Gold: Decoys. Evidence. Assurance.">
+</p>
 
 *Looks valuable. Leaves evidence.*
 
@@ -73,9 +75,16 @@ Known gaps, deliberately documented: S3 `DeleteObjects` batches, SMB share event
 Python 3.12 or newer. No third-party runtime dependencies.
 
 ```powershell
+git clone https://github.com/fusiontechstrategies/Fools-Gold.git
+Set-Location Fools-Gold
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install .
 fools-gold --help
 ```
+
+On macOS or Linux, activate the environment with `source .venv/bin/activate`.
 
 A wheel and source distribution are built by `python -m build`; CI installs the built wheel into a clean virtual environment and runs `fools-gold --help`, `check` and `demo`.
 
