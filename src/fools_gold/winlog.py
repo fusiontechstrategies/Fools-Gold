@@ -9,6 +9,7 @@ on log rollover/clear, and never changes audit policy.
 """
 
 import os
+import re
 import subprocess
 import tempfile
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from pathlib import Path
 from .collection import (
     MAX_ENVELOPE_BYTES,
     windows_events_batch,
+    windows_record_fingerprints,
 )
 from .core import (
     ContractError,
@@ -81,6 +83,7 @@ def query_security_log(
     timeout=10,
     since_record_id=None,
     newest_first=False,
+    record_id=None,
 ) -> bytes:
     """Run one fixed wevtutil query; return UTF-8 output bytes.
 
@@ -98,8 +101,17 @@ def query_security_log(
         type(since_record_id) is not int or since_record_id < 0
     ):
         raise ContractError("cursor must be a nonnegative integer")
+    if record_id is not None and (type(record_id) is not int or record_id < 0):
+        raise ContractError("record id must be a nonnegative integer")
+    if record_id is not None and since_record_id is not None:
+        raise ContractError("record id and cursor queries are mutually exclusive")
     query = QUERY
-    if since_record_id is not None:
+    if record_id is not None:
+        query = (
+            "*[System[(EventID=4663 or EventID=4656) and "
+            f"EventRecordID = {record_id}]]"
+        )
+    elif since_record_id is not None:
         query = (
             "*[System[(EventID=4663 or EventID=4656) and "
             f"EventRecordID > {since_record_id}]]"
@@ -149,6 +161,7 @@ def collect(
     mapped, skipped, observed, total = windows_events_batch(
         payload, log_epoch=log_epoch, max_events=max_events
     )
+    fingerprints = windows_record_fingerprints(payload)
     rolled_over = False
     if since_record_id is not None and total == 0:
         # A cursor query returning nothing can mean the log was cleared and
@@ -161,11 +174,13 @@ def collect(
         _, _, probe_observed, _ = windows_events_batch(
             probe, log_epoch=log_epoch, max_events=max_events
         )
+        probe_fingerprints = windows_record_fingerprints(probe)
         # Rollover means record ids went *backwards* (clear/reset). Ordinary
         # inactivity returns the same or older ids than the cursor but must not
         # be treated as a gap.
         rolled_over = bool(probe_observed) and max(probe_observed) < since_record_id
         observed = probe_observed if rolled_over else observed
+        fingerprints = probe_fingerprints if rolled_over else fingerprints
     events = []
     for item in mapped:
         try:
@@ -181,6 +196,7 @@ def collect(
         "skipped": skipped,
         "observed_min": min(observed) if observed else None,
         "next_since": next_since,
+        "cursor_fingerprint": fingerprints.get(next_since),
         "rolled_over": rolled_over,
     }
 
@@ -200,7 +216,7 @@ def load_state(path) -> dict:
         raise ContractError("collector state exceeds bounds")
     document = parse_json(payload)
     required = {"log_epoch", "last_record_id", "updated_at"}
-    allowed = required | {"generation"}
+    allowed = required | {"generation", "cursor_fingerprint"}
     if (
         not isinstance(document, dict)
         or not required <= set(document)
@@ -215,6 +231,12 @@ def load_state(path) -> dict:
     generation = document.get("generation", 0)
     if type(generation) is not int or generation < 0:
         raise ContractError("collector state has an invalid generation")
+    cursor_fingerprint = document.get("cursor_fingerprint")
+    if cursor_fingerprint is not None and (
+        not isinstance(cursor_fingerprint, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", cursor_fingerprint)
+    ):
+        raise ContractError("collector state has an invalid cursor fingerprint")
     instant(document["updated_at"])
     return {**document, "generation": generation}
 
@@ -233,6 +255,7 @@ def save_state(path, state: dict, now=None) -> None:
             "log_epoch": state.get("log_epoch"),
             "last_record_id": state.get("last_record_id"),
             "generation": state.get("generation", 0),
+            "cursor_fingerprint": state.get("cursor_fingerprint"),
             "updated_at": stamp(now or datetime.now(UTC)),
         }
     ).encode()

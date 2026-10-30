@@ -88,6 +88,29 @@ class S3OperationTests(unittest.TestCase):
         self.assertEqual(result["decoy_id"], "synthetic-s3-backup")
         self.assertEqual(result["alert"]["event"]["actions"], ["recon"])
 
+    def test_listing_exception_cannot_suppress_another_covered_decoy(self):
+        document = registry()
+        second = copy.deepcopy(document["decoys"][0])
+        second["id"] = "synthetic-s3-uncovered"
+        second["locator"]["arn"] = (
+            "arn:aws-us-gov:s3:::synthetic-decoy-bucket/backups/uncovered.txt"
+        )
+        second["exceptions"] = []
+        document["decoys"][0]["expected_actions"].append("recon")
+        document["decoys"][0]["exceptions"][0]["actions"].append("recon")
+        document["decoys"].append(second)
+        engine = Engine(Registry(document), ":memory:")
+        try:
+            raw = list_event(prefix="backups/")
+            raw["userIdentity"]["arn"] = document["decoys"][0]["exceptions"][0][
+                "actor"
+            ]
+            result = engine.process(raw, NOW)
+            self.assertEqual(result["decision"], "alert")
+            self.assertEqual(result["decoy_id"], "synthetic-s3-uncovered")
+        finally:
+            engine.close()
+
     def test_bucket_listing_is_accepted_as_data_or_management(self):
         for category in ("Data", "Management"):
             with self.subTest(category=category):
