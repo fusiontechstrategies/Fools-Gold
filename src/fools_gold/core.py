@@ -597,24 +597,32 @@ class Registry:
             self.decoys.append(d)
         self.fingerprint = digest(document)
 
-    def match(self, event: dict):
+    def matches(self, event: dict) -> list[dict]:
+        """Return every decoy covered by an event in registry order."""
         locator = event["locator"]
+        matches = []
         for d in self.decoys:
             if d["source"] != event["source"]:
                 continue
             if event.get("prefix_match"):
-                # A bucket listing matches every registered decoy under the
-                # listed bucket/prefix; the first (registry order) is reported.
+                # A bucket listing can cover several registered objects. Keep
+                # all matches so an exception on one object cannot suppress an
+                # unauthorized interaction with another object.
                 if (
                     d["source"] == "aws.cloudtrail.s3"
                     and d["locator"]["account"] == locator["account"]
                     and d["locator"]["region"] == locator["region"]
                     and d["locator"]["arn"].startswith(locator["arn"])
                 ):
-                    return d
+                    matches.append(d)
             elif d["locator"] == locator:
-                return d
-        return None
+                matches.append(d)
+        return matches
+
+    def match(self, event: dict):
+        """Return the first match for filtering-only callers."""
+        matches = self.matches(event)
+        return matches[0] if matches else None
 
 
 class Engine:
@@ -927,32 +935,45 @@ class Engine:
                     "original_decision": json.loads(previous[1])["decision"],
                     "event_id": event["id"],
                 }
-            decoy = self.registry.match(event)
+            decoys = self.registry.matches(event)
             result = {
                 "schema_version": 1,
                 "event_id": event["id"],
                 "decision": "unmatched",
                 "registry_sha256": self.registry.fingerprint,
             }
-            if decoy:
-                expired = now >= instant(decoy["expires_at"]) or event_time >= instant(
-                    decoy["expires_at"]
-                )
-                exception = next(
-                    (
-                        e
-                        for e in decoy.get("exceptions", [])
-                        if not expired
-                        and event["outcome"] == "success"
-                        and event_time >= instant(decoy["created_at"])
-                        and e["actor"] == event["actor"]
-                        and set(event["actions"]).issubset(e["actions"])
-                        and instant(e["starts_at"])
-                        <= event_time
-                        < instant(e["expires_at"])
-                        and instant(e["starts_at"]) <= now < instant(e["expires_at"])
-                    ),
-                    None,
+            if decoys:
+                assessments = []
+                for candidate in decoys:
+                    candidate_expired = now >= instant(
+                        candidate["expires_at"]
+                    ) or event_time >= instant(candidate["expires_at"])
+                    candidate_exception = next(
+                        (
+                            e
+                            for e in candidate.get("exceptions", [])
+                            if not candidate_expired
+                            and event["outcome"] == "success"
+                            and event_time >= instant(candidate["created_at"])
+                            and e["actor"] == event["actor"]
+                            and set(event["actions"]).issubset(e["actions"])
+                            and instant(e["starts_at"])
+                            <= event_time
+                            < instant(e["expires_at"])
+                            and instant(e["starts_at"])
+                            <= now
+                            < instant(e["expires_at"])
+                        ),
+                        None,
+                    )
+                    assessments.append(
+                        (candidate, candidate_expired, candidate_exception)
+                    )
+                # A prefix listing is expected only when every covered decoy
+                # authorizes it. Prefer the first uncovered decoy for evidence.
+                decoy, expired, exception = next(
+                    (item for item in assessments if item[2] is None),
+                    assessments[0],
                 )
                 result.update(decoy_id=decoy["id"], registry_expired=expired)
                 if exception:
@@ -1087,8 +1108,9 @@ class Engine:
         """Recompute the stored HMAC chain; requires the same evidence key.
 
         A signed retention checkpoint may explain a missing predecessor when
-        alerts were pruned deliberately. Unauthorized deletions still show as
-        chain breaks; replacing every alert is not locally detectable.
+        alerts were pruned deliberately. Deletions inside the retained chain
+        show as breaks. Deleting a trailing suffix or replacing every alert is
+        not locally detectable without an externally anchored chain head.
         """
         if self.mac_key is None:
             raise ContractError("integrity verification requires an evidence key")

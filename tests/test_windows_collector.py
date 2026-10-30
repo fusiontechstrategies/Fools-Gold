@@ -13,6 +13,7 @@ from fools_gold.cli import run_windows_collector
 from fools_gold.collection import (
     windows_events_batch,
     windows_events_xml_envelope,
+    windows_record_fingerprints,
 )
 from fools_gold.core import ContractError, Registry
 from fools_gold.winlog import (
@@ -41,8 +42,12 @@ def win_event(record_id, event_id=4663, keywords="0x8020000000000000", path=PATH
 def make_fetch(records):
     """Simulate wevtutil paging: concatenated Event roots, no wrapper."""
 
-    def fetch(*, max_events, since_record_id, newest_first=False):
-        if newest_first:
+    def fetch(
+        *, max_events, since_record_id, newest_first=False, record_id=None
+    ):
+        if record_id is not None:
+            batch = [item for item in records if item[0] == record_id][:max_events]
+        elif newest_first:
             batch = records[-max_events:]
         elif since_record_id is None:
             batch = records[:max_events]
@@ -176,14 +181,7 @@ class CollectorCursorTests(unittest.TestCase):
 
     def test_idle_polls_do_not_report_rollover_or_replay(self):
         records = [(index, win_event(index)) for index in range(1, 4)]
-        save_state(
-            self.state,
-            {
-                "log_epoch": "synthetic-installation-1",
-                "last_record_id": 3,
-                "generation": 0,
-            },
-        )
+        self.run_collector(records)
         for _ in range(3):
             code, output, error = self.run_collector(records)
             self.assertEqual(code, 0)
@@ -212,6 +210,7 @@ class CollectorCursorTests(unittest.TestCase):
                     "log_epoch": "synthetic-installation-1",
                     "last_record_id": 300,
                     "generation": 0,
+                    "cursor_fingerprint": "a" * 64,
                 },
             )
             after = [
@@ -259,13 +258,48 @@ class CollectorCursorTests(unittest.TestCase):
     def test_rollover_reports_a_coverage_gap_and_recovers(self):
         records = [(index, win_event(index)) for index in range(1, 4)]
         self.run_collector(records)
-        save_state(self.state, {"log_epoch": "synthetic-installation-1", "last_record_id": 300})
+        save_state(
+            self.state,
+            {
+                "log_epoch": "synthetic-installation-1",
+                "last_record_id": 300,
+                "cursor_fingerprint": "a" * 64,
+            },
+        )
         cleared = [(index, win_event(index)) for index in range(1, 4)]
         code, output, error = self.run_collector(cleared)
         self.assertEqual(code, 0)
         self.assertIn("coverage gap", error)
         self.assertEqual(len(output.splitlines()), 3)
         self.assertEqual(load_state(self.state)["last_record_id"], 3)
+
+    def test_clear_that_catches_up_past_cursor_replays_fresh_generation(self):
+        original = [(index, win_event(index)) for index in range(1, 4)]
+        self.run_collector(original)
+        cleared = [
+            (
+                index,
+                win_event(index).replace(
+                    b'<Data Name="AccessMask">0x1</Data>',
+                    b'<Data Name="AccessMask">0x3</Data>',
+                ),
+            )
+            for index in range(1, 6)
+        ]
+        code, output, error = self.run_collector(cleared)
+        self.assertEqual(code, 0)
+        self.assertIn("coverage gap", error)
+        self.assertEqual(len(output.splitlines()), 5)
+        self.assertIn('"log_epoch":"synthetic-installation-1#g1"', output)
+        state = load_state(self.state)
+        self.assertEqual(state["generation"], 1)
+        self.assertEqual(state["last_record_id"], 5)
+
+    def test_cursor_fingerprint_covers_unsupported_events(self):
+        payload = win_event(9, event_id=4656, keywords="0x8020000000000000")
+        fingerprints = windows_record_fingerprints(payload)
+        self.assertEqual(set(fingerprints), {9})
+        self.assertEqual(len(fingerprints[9]), 64)
 
     def test_log_epoch_change_restarts_the_cursor(self):
         self.run_collector([(1, win_event(1))])

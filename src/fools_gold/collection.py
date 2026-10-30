@@ -1,5 +1,6 @@
 """Bounded export adapters. No live collection or credential lookup."""
 
+import hashlib
 import json
 import re
 
@@ -225,6 +226,35 @@ def windows_events_batch(
         if record is not None:
             observed.append(record)
     return mapped_events, skipped, observed, len(events)
+
+
+def windows_record_fingerprints(payload: bytes) -> dict[int, str]:
+    """Fingerprint each bounded Event by record id, including skipped events."""
+    normalized = normalize_events_payload(payload)
+    root = _hardened_xml(normalized.decode("utf-8"))
+    prefix = "{" + EVENT_NS + "}"
+    if root.tag != prefix + "Events" or len(root) > MAX_ENVELOPE_EVENTS:
+        raise ContractError("unexpected Windows Events envelope")
+    fingerprints = {}
+    for event in root:
+        if event.tag != prefix + "Event":
+            raise ContractError("unexpected Windows Events envelope child")
+        _bounded_element(event)
+        system = event.find(prefix + "System")
+        identifier = None if system is None else system.find(prefix + "EventRecordID")
+        if (
+            identifier is None
+            or not identifier.text
+            or not identifier.text.isdecimal()
+        ):
+            continue
+        record_id = int(identifier.text)
+        if record_id in fingerprints:
+            raise ContractError("duplicate Windows EventRecordID in query result")
+        fingerprints[record_id] = hashlib.sha256(
+            ET.tostring(event, encoding="utf-8")
+        ).hexdigest()
+    return fingerprints
 
 
 def windows_events_xml_envelope(payload: bytes, *, log_epoch: str, max_events=MAX_ENVELOPE_EVENTS) -> list[dict]:

@@ -1323,10 +1323,11 @@ def make_server(engine, token: str, port: int = 0) -> HTTPServer:
     if (
         not isinstance(token, str)
         or not 16 <= len(token) <= 256
+        or not token.isascii()
         or any(ord(c) < 32 for c in token)
     ):
         raise ContractError(
-            "dashboard token must be 16 to 256 printable characters"
+            "dashboard token must be 16 to 256 printable ASCII characters"
         )
     if type(port) is not int or not 0 <= port <= 65535:
         raise ContractError("dashboard port must be an integer from 0 to 65535")

@@ -94,7 +94,14 @@ def run_windows_collector(
     pages_per_cycle=10,
     fetch=None,
 ):
-    from .winlog import collect, load_state, save_state, spool_page
+    from .collection import windows_record_fingerprints
+    from .winlog import (
+        collect,
+        load_state,
+        query_security_log,
+        save_state,
+        spool_page,
+    )
 
     if type(pages_per_cycle) is not int or not 1 <= pages_per_cycle <= 50:
         raise ContractError("--pages-per-cycle must be 1 to 50")
@@ -111,6 +118,7 @@ def run_windows_collector(
         )
         state = {"log_epoch": log_epoch, "last_record_id": None, "generation": 0}
     generation = state.get("generation", 0)
+    fetch = fetch or query_security_log
 
     def effective_epoch():
         # Record ids are only unique within one log generation. Bump the
@@ -120,6 +128,35 @@ def run_windows_collector(
     try:
         while True:
             since = state.get("last_record_id")
+            cursor_fingerprint = state.get("cursor_fingerprint")
+            if since is not None:
+                if cursor_fingerprint is None:
+                    print(
+                        "Fool's Gold collector: legacy cursor has no identity; "
+                        "replaying retained events once to establish it",
+                        file=sys.stderr,
+                    )
+                    since = None
+                else:
+                    cursor_payload = fetch(
+                        max_events=1,
+                        since_record_id=None,
+                        newest_first=False,
+                        record_id=since,
+                    )
+                    current_fingerprint = windows_record_fingerprints(
+                        cursor_payload
+                    ).get(since)
+                    if current_fingerprint != cursor_fingerprint:
+                        print(
+                            "Fool's Gold collector: coverage gap - stored cursor "
+                            f"identity changed or disappeared at record {since}; "
+                            f"starting generation {generation + 1}",
+                            file=sys.stderr,
+                        )
+                        generation += 1
+                        since = None
+                        cursor_fingerprint = None
             for _ in range(pages_per_cycle):
                 events, report = collect(
                     registry,
@@ -150,12 +187,17 @@ def run_windows_collector(
                     )
                     generation += 1
                     since = 0
+                    cursor_fingerprint = None
                 else:
                     since = report["next_since"]
+                    cursor_fingerprint = (
+                        report["cursor_fingerprint"] or cursor_fingerprint
+                    )
                 state = {
                     "log_epoch": log_epoch,
                     "last_record_id": since,
                     "generation": generation,
+                    "cursor_fingerprint": cursor_fingerprint,
                 }
                 if state_file:
                     save_state(state_file, state)

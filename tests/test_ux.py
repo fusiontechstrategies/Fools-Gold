@@ -247,7 +247,13 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 404)
 
     def test_server_rejects_weak_tokens(self):
-        for token in ("", "short", "x" * 257, "bad\ntoken" + "x" * 10):
+        for token in (
+            "",
+            "short",
+            "x" * 257,
+            "bad\ntoken" + "x" * 10,
+            "é" * 16,
+        ):
             with self.assertRaises(Exception):
                 make_server(self.engine, token, 0)
 
